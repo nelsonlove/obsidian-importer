@@ -239,10 +239,32 @@ const DEFAULT_DATA: ImporterData = {
 	},
 };
 
+export interface AppleNotesHeadlessOptions {
+	/** Vault folder to import into; created if missing. Defaults to "Apple Notes". */
+	outputFolder?: string;
+}
+
+export interface AppleNotesHeadlessReport {
+	outputFolder: string;
+	imported: number;
+	attachments: number;
+	skipped: number;
+	failed: number;
+	cancelled: boolean;
+	finishedAt: string;
+}
+
+export interface ImporterApi {
+	importAppleNotes(options?: AppleNotesHeadlessOptions): Promise<AppleNotesHeadlessReport>;
+}
+
 export default class ImporterPlugin extends Plugin {
 	importers: Record<string, ImporterDefinition>;
 
 	authCallback: AuthCallback | undefined;
+
+	/** Programmatic entry points for automations (e.g. TaskNotes Workflows). */
+	api: ImporterApi;
 
 	async onload() {
 		this.importers = {
@@ -339,6 +361,28 @@ export default class ImporterPlugin extends Plugin {
 			},
 		});
 
+		this.api = {
+			importAppleNotes: (options = {}) => this.importAppleNotesHeadless(options),
+		};
+
+		this.addCommand({
+			id: 'apple-notes-headless',
+			name: 'Import Apple Notes (headless)',
+			callback: async () => {
+				try {
+					const report = await this.importAppleNotesHeadless();
+					new Notice(
+						`Apple Notes: imported ${report.imported}, ${report.attachments} attachments, ` +
+						`${report.skipped} skipped, ${report.failed} failed.`
+					);
+				}
+				catch (error) {
+					new Notice(`Apple Notes import failed: ${error instanceof Error ? error.message : String(error)}`);
+					console.error('[importer] apple-notes-headless failed', error);
+				}
+			},
+		});
+
 		this.registerObsidianProtocolHandler('importer-auth',
 			(data) => {
 				if (this.authCallback) {
@@ -367,6 +411,41 @@ export default class ImporterPlugin extends Plugin {
 
 	onunload() {
 
+	}
+
+	/**
+	 * Runs the Apple Notes importer without opening the modal, into
+	 * `outputFolder` (created if needed), and resolves with a summary. Exposed on
+	 * `this.api.importAppleNotes` and via the `importer:apple-notes-headless`
+	 * command so automations (TaskNotes Workflows, etc.) can trigger it and await
+	 * completion. Incremental by default — notes unchanged since their existing
+	 * file are skipped by the importer.
+	 */
+	async importAppleNotesHeadless(options: AppleNotesHeadlessOptions = {}): Promise<AppleNotesHeadlessReport> {
+		const outputFolder = options.outputFolder?.trim() || 'Apple Notes';
+
+		// The importer only touches `modal.contentEl` while building its (unused)
+		// configuration UI during init(); import() itself never uses the modal.
+		// A throwaway element lets init() run harmlessly with no modal open.
+		const modalStub = { contentEl: createDiv(), plugin: this } as unknown as ImporterModal;
+		const importer = new AppleNotesImporter(this.app, modalStub);
+		if (importer.notAvailable) {
+			throw new Error('Apple Notes import is only available in Obsidian desktop on macOS.');
+		}
+		importer.outputLocation = outputFolder;
+
+		const ctx = new ImportContext(createDiv());
+		await importer.import(ctx);
+
+		return {
+			outputFolder,
+			imported: ctx.notes,
+			attachments: ctx.attachments,
+			skipped: ctx.skipped.length,
+			failed: ctx.failed.length,
+			cancelled: ctx.cancelled,
+			finishedAt: new Date().toISOString(),
+		};
 	}
 
 	async loadData(): Promise<ImporterData> {
