@@ -101,6 +101,8 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 		return this.vault.getConfig('strictLineBreaks') === true;
 	}
 
+	/** Apple Notes folder names to skip on import (e.g. the post-import "Exported" folder). */
+	excludeFolderNames: string[] = [];
 	// Do not initialize fields set by init(); the base constructor calls it first.
 	private dataPath: string | null;
 
