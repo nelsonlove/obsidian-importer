@@ -61,7 +61,10 @@ export interface ImporterApi {
 /**
  * Builds the AppleScript that moves imported source notes into an Exported
  * folder, or deletes them (to Recently Deleted). Only notes not modified since
- * `before` are affected. In dry-run it returns the count that would be touched.
+ * `before` are affected, and the "Shared" and "Recently Deleted" folders (plus
+ * the Exported target, in move mode) are never touched. In dry-run it returns
+ * the count that would be touched via a count-only script that emits no
+ * mutating statements.
  */
 function buildDispositionScript(
 	mode: 'move' | 'delete',
@@ -79,36 +82,59 @@ function buildDispositionScript(
 		`set time of cutoff to ${tod}`,
 	].join('\n\t');
 
-	if (mode === 'delete') {
+	// Folders disposition never touches. "Recently Deleted" is already excluded
+	// from Notes' app-level `folders`, but we guard it explicitly; "Shared" holds
+	// notes shared with other people. In move mode the Exported target is also
+	// skipped so already-moved notes aren't re-moved. Names are matched literally,
+	// so a non-English Notes UI would need localized names here.
+	const protectedFolders = mode === 'move' ? [exp, 'Shared', 'Recently Deleted'] : ['Shared', 'Recently Deleted'];
+	const notExcluded = protectedFolders.map((name) => `fn is not "${name}"`).join(' and ');
+
+	if (dryRun) {
+		// Count-only: no delete/move/make statements are emitted, so a dry-run
+		// provably cannot mutate Notes.
 		return [
 			'tell application "Notes"',
 			'\t' + cutoff,
-			'\tset doomed to (notes whose modification date ≤ cutoff)',
-			`\tif ${dryRun ? 'true' : 'false'} then return (count of doomed)`,
 			'\tset n to 0',
-			'\trepeat with x in doomed',
-			'\t\tdelete x',
-			'\t\tset n to n + 1',
+			'\trepeat with f in folders',
+			'\t\tset fn to name of f',
+			`\t\tif ${notExcluded} then`,
+			'\t\t\trepeat with x in (notes of f)',
+			'\t\t\t\tif modification date of x ≤ cutoff then set n to n + 1',
+			'\t\t\tend repeat',
+			'\t\tend if',
 			'\tend repeat',
 			'\treturn n',
 			'end tell',
 		].join('\n');
 	}
 
+	const action = mode === 'delete' ? 'delete x' : `move x to folder "${exp}"`;
+	const ensureTarget = mode === 'move'
+		? [`\tif not (exists folder "${exp}") then make new folder with properties {name:"${exp}"}`]
+		: [];
 	return [
 		'tell application "Notes"',
-		`\tif not (exists folder "${exp}") then make new folder with properties {name:"${exp}"}`,
-		`\tset target to folder "${exp}"`,
+		...ensureTarget,
 		'\t' + cutoff,
-		'\tset toMove to {}',
-		'\trepeat with x in notes',
-		`\t\tif (modification date of x) ≤ cutoff and name of (container of x) is not "${exp}" then set end of toMove to x`,
+		'\tset n to 0',
+		'\trepeat with f in folders',
+		'\t\tset fn to name of f',
+		`\t\tif ${notExcluded} then`,
+		// Snapshot the folder's notes and iterate in reverse so deleting/moving a
+		// note doesn't shift the indices of ones not yet processed.
+		'\t\t\tset ns to notes of f',
+		'\t\t\trepeat with i from (count of ns) to 1 by -1',
+		'\t\t\t\tset x to item i of ns',
+		'\t\t\t\tif modification date of x ≤ cutoff then',
+		`\t\t\t\t\t${action}`,
+		'\t\t\t\t\tset n to n + 1',
+		'\t\t\t\tend if',
+		'\t\t\tend repeat',
+		'\t\tend if',
 		'\tend repeat',
-		`\tif ${dryRun ? 'true' : 'false'} then return (count of toMove)`,
-		'\trepeat with x in toMove',
-		'\t\tmove x to target',
-		'\tend repeat',
-		'\treturn (count of toMove)',
+		'\treturn n',
 		'end tell',
 	].join('\n');
 }
