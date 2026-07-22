@@ -44,6 +44,8 @@ export class AppleNotesImporter extends FormatImporter {
 	includeHandwriting = false;
 	duplicateHandling = DuplicateHandling.ImportUpdated;
 	trashFolders: number[] = [];
+	/** Apple Notes folder names to skip on import (e.g. the post-import "Exported" folder). */
+	excludeFolderNames: string[] = [];
 	filePrefixFormat: string;
 
 	init(): void {
@@ -241,6 +243,12 @@ export class AppleNotesImporter extends FormatImporter {
 			return null;
 		}
 		else if (!this.importTrashed && folder.ZFOLDERTYPE == ANFolderType.Trash) {
+			this.trashFolders.push(id);
+			return null;
+		}
+		else if (this.excludeFolderNames.includes(folder.ZTITLE2)) {
+			// Reuse the trash-exclusion path: notes in this folder are left out of
+			// the import query (WHERE zfolder NOT IN trashFolders).
 			this.trashFolders.push(id);
 			return null;
 		}
