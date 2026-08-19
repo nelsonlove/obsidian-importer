@@ -269,6 +269,40 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 		}
 	}
 
+	/**
+	 * Headless folder selection: selects every importable folder — excluding
+	 * Smart and Trash folders, and any folder whose name is in `excludeNames` —
+	 * without the picker UI. Returns how many folders were selected.
+	 */
+	async selectAllFolders(excludeNames: string[] = []): Promise<number> {
+		if (!this.dataPath) return 0;
+		//@ts-ignore
+		const db = new SQLiteTag(path.join(this.dataPath, NOTE_DB), { readonly: true, persistent: true }) as SQLiteTagSpawned;
+
+		try {
+			const keys = Object.fromEntries(
+				(await db.all`SELECT z_ent, z_name FROM z_primarykey`).map(k => [k.Z_NAME, k.Z_ENT])
+			);
+
+			const folders = await db.all`
+				SELECT z_pk, ztitle2, zfoldertype
+				FROM ziccloudsyncingobject
+				WHERE z_ent = ${keys.ICFolder} AND ztitle2 IS NOT NULL
+			` as unknown as ANFolderRow[];
+
+			this.selectedFolders = folders
+				.filter(folder =>
+					folder.ZFOLDERTYPE !== ANFolderType.Smart &&
+					folder.ZFOLDERTYPE !== ANFolderType.Trash &&
+					!excludeNames.includes(folder.ZTITLE2))
+				.map(folder => folder.Z_PK);
+			return this.selectedFolders.length;
+		}
+		finally {
+			db.close();
+		}
+	}
+
 	private buildTree(folders: ANFolderRow[], accounts: ANAccountRow[], counts: Map<number, number>): AppleNotesTreeNode[] {
 		const nodes = new Map<number, AppleNotesTreeNode>();
 
