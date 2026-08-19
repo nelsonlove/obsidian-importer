@@ -250,27 +250,37 @@ export default class ImporterPlugin extends Plugin {
 		const exportedFolder = options.exportedFolder?.trim() || 'Exported';
 		const dispositionDryRun = options.dispositionDryRun ?? false;
 
-		// The importer only touches `modal.contentEl` while building its (unused)
-		// configuration UI during init(); import() itself never uses the modal.
-		// A throwaway element lets init() run harmlessly with no modal open.
-		const modalStub = { contentEl: createDiv(), plugin: this } as unknown as ImporterModal;
-		const importer = new AppleNotesImporter(this.app, modalStub);
+		// A host with null step elements runs the importer with no UI: draw() and
+		// addSetting() no-op against a null stepEl, and loadFolders() only feeds
+		// the (undrawn) picker.
+		const host: ImporterHost = {
+			sourceEl: null,
+			outputEl: null,
+			optionsEl: null,
+			plugin: this,
+			importerId: 'apple-notes',
+			abortController: new AbortController(),
+		};
+		const importer = new AppleNotesImporter(this.app, host);
+		await importer.ready;
 		if (importer.notAvailable) {
 			throw new Error('Apple Notes import is only available in Obsidian desktop on macOS.');
 		}
 		importer.outputLocation = outputFolder;
 		importer.filePrefixFormat = filePrefixFormat;
-		// When moving imported notes into an "Exported" folder, that folder must be
-		// skipped on import — otherwise its notes re-import into a subfolder.
-		if (disposition === 'move') {
-			importer.excludeFolderNames = [exportedFolder];
+		// The picker normally decides selectedFolders; headless selects everything
+		// importable. When moving imported notes into an "Exported" folder, that
+		// folder is skipped — otherwise its notes re-import into a subfolder.
+		const selected = await importer.selectAllFolders(disposition === 'move' ? [exportedFolder] : []);
+		if (selected === 0) {
+			throw new Error('No importable Apple Notes folders found. Grant Notes access once via the Importer dialog first.');
 		}
 
 		// Notes not modified since we start are safely captured by this import;
 		// notes touched during it are left for the next run (so disposition never
 		// removes an un-imported note).
 		const startedAt = new Date();
-		const ctx = new ImportContext(createDiv());
+		const ctx = new ImportContext();
 		await importer.import(ctx);
 
 		let disposed = 0;
@@ -300,7 +310,7 @@ export default class ImporterPlugin extends Plugin {
 	 * deleted — or, in dry-run, how many WOULD be. Desktop-only.
 	 *
 	 * Note: "delete" sends notes to Recently Deleted (30-day recovery), which the
-	 * importer already skips. "move" relies on `excludeFolderNames` skipping the
+	 * importer already skips. "move" relies on `selectAllFolders` skipping the
 	 * Exported folder on subsequent imports.
 	 */
 	private async disposeAppleNotes(
