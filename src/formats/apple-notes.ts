@@ -275,6 +275,9 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 	 * without the picker UI. Returns how many folders were selected.
 	 */
 	async selectAllFolders(excludeNames: string[] = []): Promise<number> {
+		// Headless instances never run addAccessSetting() (it bails with no UI
+		// to draw), so dataPath is uninitialized here — probe for it directly.
+		if (!this.dataPath) this.dataPath = this.readableDataFolder();
 		if (!this.dataPath) return 0;
 		//@ts-ignore
 		const db = new SQLiteTag(path.join(this.dataPath, NOTE_DB), { readonly: true, persistent: true }) as SQLiteTagSpawned;
