@@ -5,6 +5,7 @@ import { AuthCallback } from './constants';
 import { ImportContext } from './import-context';
 import { DEFAULT_DATA, ImporterData } from './plugin-data';
 import { ImporterDefinition, IMPORTERS, importerName } from './importers';
+import { AppleNotesImporter } from './formats/apple-notes';
 import { ImporterFlow, ImporterShell } from './importer-flow';
 import { ImporterSettingTab } from './importer-setting-tab';
 import { i18n, setLanguage } from './i18n';
@@ -30,8 +31,19 @@ export type AppleNotesDisposition = 'none' | 'move' | 'delete';
 export interface AppleNotesHeadlessOptions {
 	/** Vault folder to import into; created if missing. Defaults to "Apple Notes". */
 	outputFolder?: string;
-	/** moment.js date-prefix format for filenames (e.g. "YYYY-MM-DD"); "" = none. Default "YYYY-MM-DD". */
-	filePrefixFormat?: string;
+	/**
+	 * Template for the imported note's title. Default `"{{title}}"` — the Apple Note's own title.
+	 *
+	 * This replaces the old `filePrefixFormat` date-prefix option. Upstream 3.x dropped the prefix
+	 * field entirely in favour of a full title template, so a date prefix is now written as one:
+	 * `'{{ctime | date:"YYYY-MM-DD"}} {{title}}'` reproduces exactly what
+	 * `filePrefixFormat: "YYYY-MM-DD"` used to do. The template is strictly more expressive — it can
+	 * place the date anywhere in the title, or key off something other than the creation time.
+	 *
+	 * Upstream does still read a stored bare prefix and wrap it into this shape, but only as a
+	 * migration shim for its own saved settings. A headless caller should pass the template.
+	 */
+	noteTitleTemplate?: string;
 	/** What to do with each source Apple Note after import. Default "none". */
 	sourceDisposition?: AppleNotesDisposition;
 	/** Apple Notes folder that imported notes are moved into when disposition is "move". Default "Exported". */
@@ -42,7 +54,7 @@ export interface AppleNotesHeadlessOptions {
 
 export interface AppleNotesHeadlessReport {
 	outputFolder: string;
-	filePrefixFormat: string;
+	noteTitleTemplate: string;
 	imported: number;
 	attachments: number;
 	skipped: number;
@@ -245,7 +257,7 @@ export default class ImporterPlugin extends Plugin {
 	 */
 	async importAppleNotesHeadless(options: AppleNotesHeadlessOptions = {}): Promise<AppleNotesHeadlessReport> {
 		const outputFolder = options.outputFolder?.trim() || 'Apple Notes';
-		const filePrefixFormat = options.filePrefixFormat ?? 'YYYY-MM-DD';
+		const noteTitleTemplate = options.noteTitleTemplate?.trim() || '{{title}}';
 		const disposition: AppleNotesDisposition = options.sourceDisposition ?? 'none';
 		const exportedFolder = options.exportedFolder?.trim() || 'Exported';
 		const dispositionDryRun = options.dispositionDryRun ?? false;
@@ -267,7 +279,9 @@ export default class ImporterPlugin extends Plugin {
 			throw new Error('Apple Notes import is only available in Obsidian desktop on macOS.');
 		}
 		importer.outputLocation = outputFolder;
-		importer.filePrefixFormat = filePrefixFormat;
+		// Set AFTER `ready`: the importer's own setup reads a saved title template out of
+		// localStorage, so assigning before it would be silently overwritten.
+		importer.noteTitleTemplate = noteTitleTemplate;
 		// The picker normally decides selectedFolders; headless selects everything
 		// importable. When moving imported notes into an "Exported" folder, that
 		// folder is skipped — otherwise its notes re-import into a subfolder.
@@ -290,7 +304,7 @@ export default class ImporterPlugin extends Plugin {
 
 		return {
 			outputFolder,
-			filePrefixFormat,
+			noteTitleTemplate,
 			imported: ctx.notes,
 			attachments: ctx.attachments,
 			skipped: ctx.skipped.length,
