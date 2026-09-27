@@ -10,6 +10,7 @@ import { SafariReadingListImporter } from './formats/safari-reading-list';
 import { ImporterFlow, ImporterShell } from './importer-flow';
 import { ImporterSettingTab } from './importer-setting-tab';
 import { i18n, setLanguage } from './i18n';
+import { describeReason } from './util';
 
 declare global {
 	interface Window {
@@ -78,6 +79,12 @@ export interface ReadingListHeadlessOptions {
 	fetchContent?: boolean;
 }
 
+export interface ReadingListOutcome {
+	/** The item, by the name the import reported it under. */
+	name: string;
+	reason: string;
+}
+
 export interface ReadingListHeadlessReport {
 	manifestPath: string;
 	outputFolder: string;
@@ -86,6 +93,13 @@ export interface ReadingListHeadlessReport {
 	imported: number;
 	skipped: number;
 	failed: number;
+	/**
+	 * What failed and why, and what was passed over and why. Counts alone say
+	 * nothing a caller can act on: a headless run has no report note and no
+	 * dialog to read, so the reasons come back with the numbers.
+	 */
+	failures: ReadingListOutcome[];
+	skips: ReadingListOutcome[];
 	cancelled: boolean;
 	finishedAt: string;
 }
@@ -103,6 +117,13 @@ export interface ImporterApi {
  * the count that would be touched via a count-only script that emits no
  * mutating statements.
  */
+/** What an import reported under one outcome, as plain strings a caller can read. */
+function outcomesIn(ctx: ImportContext, outcome: 'failed' | 'skipped'): ReadingListOutcome[] {
+	return ctx.log
+		.filter(entry => entry.outcome === outcome)
+		.map(({ name, reason }) => ({ name, reason: describeReason(reason) }));
+}
+
 function buildDispositionScript(
 	mode: 'move' | 'delete',
 	before: Date,
@@ -402,6 +423,8 @@ export default class ImporterPlugin extends Plugin {
 			imported: ctx.notes,
 			skipped: ctx.skipped.length,
 			failed: ctx.failed.length,
+			failures: outcomesIn(ctx, 'failed'),
+			skips: outcomesIn(ctx, 'skipped'),
 			cancelled: ctx.cancelled,
 			finishedAt: new Date().toISOString(),
 		};

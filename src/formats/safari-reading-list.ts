@@ -14,6 +14,7 @@ import {
 	readingListTitle,
 	readingListVariables,
 	stubMarkdown,
+	templateSafe,
 } from './safari-reading-list/convert';
 
 const DEFAULT_OUTPUT_FOLDER = 'Reading List';
@@ -242,7 +243,11 @@ export class SafariReadingListImporter extends FormatImporter {
 			resolveAttachment: async () => null,
 		});
 
-		return { markdown, variables: readingListVariables(item, 'fetched', variables), status: 'fetched' };
+		return {
+			markdown,
+			variables: readingListVariables(item, 'fetched', templateSafe(variables)),
+			status: 'fetched',
+		};
 	}
 }
 

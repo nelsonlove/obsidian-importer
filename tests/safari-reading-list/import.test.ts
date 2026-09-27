@@ -318,6 +318,24 @@ test('a page whose fetch finishes is still written when the import is stopped du
 	assert.match(note(vault, 'Reading List/An article.md'), /\nimport-status: fetched\n/u);
 });
 
+test('a page far too large to template still becomes a note', async () => {
+	const { vault, subject } = importer();
+	// A commercial product page runs to megabytes of HTML. The template engine
+	// refuses a value past a few million characters and refuses the whole render
+	// with it, title and body alike, which used to cost the note: six Amazon pages
+	// were lost this way on the first real run of 189 items.
+	const huge = '<html><head><title>An article</title></head><body><main><p>'
+		+ 'The body text of the article, long enough to count as content.'
+		+ `</p><div hidden>${'z'.repeat(6_000_000)}</div></main></body></html>`;
+	answerRequests(() => page(huge));
+
+	const ctx = await importing(subject, [readingList([ARTICLE])]);
+
+	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
+	assert.match(note(vault, 'Reading List/An article.md'), /The body text of the article/u);
+	assert.deepEqual(ctx.failed, []);
+});
+
 test('a title spread over lines, or missing, still names a file', async () => {
 	const { vault, subject } = importer();
 	answerRequests(() => page('<main><p>Body</p></main>'));

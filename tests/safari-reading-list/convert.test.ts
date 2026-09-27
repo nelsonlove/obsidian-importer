@@ -17,6 +17,7 @@ import {
 	readingListTitle,
 	readingListVariables,
 	stubMarkdown,
+	templateSafe,
 } from '../../src/formats/safari-reading-list/convert';
 
 const ENVELOPE = JSON.stringify({
@@ -167,6 +168,20 @@ test('frontmatter records the source, and description and site only when known',
 		read: false,
 		'import-status': 'unresolved',
 	});
+});
+
+test('the whole raw page never reaches a template, and neither does any absurd value', () => {
+	const safe = templateSafe({
+		title: 'A title',
+		site: 'Example',
+		words: 900,
+		fullHtml: '<html>the whole page</html>',
+		contentHtml: 'x'.repeat(1_000_001),
+		description: 'y'.repeat(1_000_000),
+	});
+
+	assert.deepEqual(Object.keys(safe).sort(), ['description', 'site', 'title', 'words']);
+	assert.equal(safe.words, 900);
 });
 
 test('the stub for an unresolved item links the page and keeps the preview text', () => {

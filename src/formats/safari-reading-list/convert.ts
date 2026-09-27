@@ -147,6 +147,38 @@ export function readingListTitle(item: ReadingListItem, extractedTitle?: string)
 }
 
 /**
+ * The whole raw page, which the extractor returns beside its findings. It is of
+ * no use in a note template and on a large commercial page it runs to megabytes,
+ * so it never reaches the template layer.
+ */
+const NEVER_A_TEMPLATE_VARIABLE = ['fullHtml'];
+
+/**
+ * The template engine refuses to render a value past a few million characters,
+ * and it refuses the whole render rather than that one value — which would cost
+ * the note, title and body alike. So anything absurd for a template to hold is
+ * left out well below that limit.
+ */
+const LONGEST_TEMPLATE_VALUE = 1_000_000;
+
+/**
+ * What the extractor found, less anything that would cost the note. A page whose
+ * own content is larger than this cannot be templated at all, so dropping the
+ * value is the difference between a note with a plain title and no note.
+ */
+export function templateSafe(extracted: Record<string, unknown>): Record<string, unknown> {
+	const safe: Record<string, unknown> = {};
+
+	for (const [key, value] of Object.entries(extracted)) {
+		if (NEVER_A_TEMPLATE_VARIABLE.includes(key)) continue;
+		if (typeof value === 'string' && value.length > LONGEST_TEMPLATE_VALUE) continue;
+		safe[key] = value;
+	}
+
+	return safe;
+}
+
+/**
  * What a template can reach for. Everything Defuddle extracted comes first;
  * the item's own facts, and its import status, sit on top under stable names.
  */
