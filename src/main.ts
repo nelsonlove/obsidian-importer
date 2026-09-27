@@ -77,6 +77,12 @@ export interface ReadingListHeadlessOptions {
 	noteTitleTemplate?: string;
 	/** Fetch each page and keep its content; false writes link stubs only. Default true. */
 	fetchContent?: boolean;
+	/**
+	 * Which kind of note each item becomes: "clipping" preserves the page,
+	 * "link" curates a pointer to it. Default "clipping". A page that cannot be
+	 * fetched is imported as a link either way.
+	 */
+	noteKind?: 'clipping' | 'link';
 }
 
 export interface ReadingListOutcome {
@@ -90,6 +96,7 @@ export interface ReadingListHeadlessReport {
 	outputFolder: string;
 	noteTitleTemplate: string;
 	fetchContent: boolean;
+	noteKind: 'clipping' | 'link';
 	imported: number;
 	skipped: number;
 	failed: number;
@@ -109,6 +116,13 @@ export interface ImporterApi {
 	importReadingList(options: ReadingListHeadlessOptions): Promise<ReadingListHeadlessReport>;
 }
 
+/** What an import reported under one outcome, as plain strings a caller can read. */
+function outcomesIn(ctx: ImportContext, outcome: 'failed' | 'skipped'): ReadingListOutcome[] {
+	return ctx.log
+		.filter(entry => entry.outcome === outcome)
+		.map(({ name, reason }) => ({ name, reason: describeReason(reason) }));
+}
+
 /**
  * Builds the AppleScript that moves imported source notes into an Exported
  * folder, or deletes them (to Recently Deleted). Only notes not modified since
@@ -117,13 +131,6 @@ export interface ImporterApi {
  * the count that would be touched via a count-only script that emits no
  * mutating statements.
  */
-/** What an import reported under one outcome, as plain strings a caller can read. */
-function outcomesIn(ctx: ImportContext, outcome: 'failed' | 'skipped'): ReadingListOutcome[] {
-	return ctx.log
-		.filter(entry => entry.outcome === outcome)
-		.map(({ name, reason }) => ({ name, reason: describeReason(reason) }));
-}
-
 function buildDispositionScript(
 	mode: 'move' | 'delete',
 	before: Date,
@@ -387,6 +394,7 @@ export default class ImporterPlugin extends Plugin {
 		const outputFolder = options.outputFolder?.trim() || 'Reading List';
 		const noteTitleTemplate = options.noteTitleTemplate?.trim() || '{{title}}';
 		const fetchContent = options.fetchContent ?? true;
+		const noteKind = options.noteKind === 'link' ? 'link' : 'clipping';
 
 		const host: ImporterHost = {
 			sourceEl: null,
@@ -402,6 +410,7 @@ export default class ImporterPlugin extends Plugin {
 		// Set AFTER `ready`, for the same reason as the Apple Notes path above.
 		importer.noteTitleTemplate = noteTitleTemplate;
 		importer.fetchContent = fetchContent;
+		importer.noteKind = noteKind;
 		// Pinned, not inherited: `ready` loads whatever was last chosen in the
 		// dialog, and a saved "Create copy" would add a file on every headless run
 		// while a saved "Skip" could never update one. Recording the source URL is
@@ -420,6 +429,7 @@ export default class ImporterPlugin extends Plugin {
 			outputFolder,
 			noteTitleTemplate,
 			fetchContent,
+			noteKind,
 			imported: ctx.notes,
 			skipped: ctx.skipped.length,
 			failed: ctx.failed.length,

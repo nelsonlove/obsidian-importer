@@ -210,27 +210,114 @@ export function readingListVariables(
  * and `import-status`, which every note carries so a query can find the
  * unread and the unresolved.
  */
+/**
+ * Which kind of note an item becomes.
+ *
+ * `clipping` preserves the page: the material is the point, and the note's body
+ * is whatever the page said. `link` curates a pointer to it: no material, an
+ * annotation and a status instead. A page that did not arrive has nothing to
+ * preserve, so it can only honestly be a link — see `noteKindFor`.
+ */
+export type NoteKind = 'clipping' | 'link';
+
+/** The class each kind binds, and the value written to `type`. */
+const NOTE_CLASS: Record<NoteKind, string> = {
+	clipping: 'Note/Clipping/Web',
+	link: 'Note/Link',
+};
+
+/** A fresh capture, in the vocabulary both classes start from. */
+const INITIAL_STATUS = 'captured';
+
+/**
+ * The kind an item actually becomes: what was asked for, unless the page never
+ * arrived, in which case a link is the only honest answer — a clipping with no
+ * clipped material would claim to preserve something it does not have.
+ */
+export function noteKindFor(asked: NoteKind, status: ImportStatus): NoteKind {
+	return status === 'unresolved' ? 'link' : asked;
+}
+
+/**
+ * A UUIDv7, which every note carries as the identity assigned at its creation:
+ * 48 bits of millisecond timestamp, the version and variant, and random for the
+ * rest, so ids sort by when they were made.
+ */
+export function uuidv7(now = Date.now(), random = () => Math.floor(Math.random() * 256)): string {
+	const bytes = new Uint8Array(16);
+	let stamp = now;
+	for (let i = 5; i >= 0; i--) {
+		bytes[i] = stamp % 256;
+		stamp = Math.floor(stamp / 256);
+	}
+	for (let i = 6; i < 16; i++) bytes[i] = random();
+	bytes[6] = 0x70 | (bytes[6] & 0x0f);
+	bytes[8] = 0x80 | (bytes[8] & 0x3f);
+
+	const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** `YYYY-MM-DDTHH:mm:ss` in local time, the form the timestamp fields take. */
+export function localTimestamp(when: Date): string {
+	const pad = (value: number) => String(value).padStart(2, '0');
+	return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`
+		+ `T${pad(when.getHours())}:${pad(when.getMinutes())}:${pad(when.getSeconds())}`;
+}
+
+export interface NoteIdentity {
+	/** The note's name, which its filename follows. */
+	title: string;
+	uid: string;
+	/** When this import ran. */
+	now: Date;
+}
+
+/**
+ * The note's frontmatter, holding only what the note's own class declares plus
+ * the identity every note carries. Facts the class has no field for are left
+ * out rather than invented: a key no class declares is a key nothing reads.
+ */
 export function readingListFrontMatter(
 	item: ReadingListItem,
 	status: ImportStatus,
 	extracted: Record<string, unknown> = {},
+	kind: NoteKind = 'clipping',
+	identity: NoteIdentity = { title: '', uid: '', now: new Date() },
 ): FrontMatterCache {
-	const frontMatter: Record<string, unknown> = { url: item.url };
-
-	const site = item.siteName ?? text(extracted.site);
-	if (site) frontMatter.site = site;
+	const actual = noteKindFor(kind, status);
+	const description = item.previewText ?? text(extracted.description) ?? '';
 	const author = text(extracted.author);
-	if (author) frontMatter.author = author;
-	const published = text(extracted.published);
-	if (published) frontMatter.published = published;
-	const description = item.previewText ?? text(extracted.description);
-	if (description) frontMatter.description = description;
-	const image = item.imageUrl ?? text(extracted.image);
-	if (image) frontMatter.image = image;
-	if (item.dateAdded) frontMatter.added = item.dateAdded;
-	if (item.dateLastViewed) frontMatter.viewed = item.dateLastViewed;
-	frontMatter.read = Boolean(item.dateLastViewed);
-	frontMatter['import-status'] = status;
+
+	const frontMatter: Record<string, unknown> = {
+		title: identity.title || readingListTitle(item, text(extracted.title)),
+		description,
+		type: NOTE_CLASS[actual],
+		uid: identity.uid || uuidv7(identity.now.getTime()),
+		// The note is as old as the day Safari saved the page, which is also the
+		// creation time written to the file itself.
+		created: item.dateAdded ?? localTimestamp(identity.now),
+		modified: localTimestamp(identity.now),
+		status: INITIAL_STATUS,
+		tags: [],
+		url: item.url,
+	};
+
+	if (actual === 'clipping') {
+		// Clipping's own fields: provenance, who it is from, when it was captured.
+		const source = item.siteName ?? text(extracted.site);
+		if (source) frontMatter.source = source;
+		if (author) frontMatter.author = [author];
+		frontMatter.clipped = localTimestamp(identity.now);
+	}
+	else {
+		if (author) frontMatter.author = [author];
+		frontMatter.rating = '';
+		frontMatter.read = Boolean(item.dateLastViewed);
+		// A link's own status machine starts here too, and the paired clipping it
+		// may gain later is declared empty rather than absent.
+		frontMatter.clipping = '';
+	}
 
 	return frontMatter as FrontMatterCache;
 }
@@ -253,4 +340,83 @@ export function stubMarkdown(item: ReadingListItem, failure?: string): string {
 	lines.push(failure ? `Content could not be fetched: ${failure}` : 'Content was not fetched.', '');
 
 	return lines.join('\n');
+}
+
+/**
+ * A link note's body, in the shape the vault's own link notes take: the title
+ * and description rendered from the note's own properties, the reason this
+ * resource is here, then the status machine, the two inputs and the key. The
+ * headings are what matters — a blueprint keeps the rendered blocks in step
+ * afterwards — but writing them as the population has them means an imported
+ * link is indistinguishable from one made by hand.
+ */
+export function linkMarkdown(item: ReadingListItem, whyItMatters: string): string {
+	return [
+		'# `VIEW[\\[{title}\\]({url})][text(renderMarkdown)]`',
+		'',
+		'`VIEW[*{description}*][text(renderMarkdown)]`',
+		'',
+		'---',
+		'',
+		'## Why it matters',
+		'',
+		whyItMatters,
+		'',
+		'---',
+		'',
+		'``VIEW[## Status: `{status}`][text(renderMarkdown)]``',
+		'',
+		'```js-engine',
+		'const mod = await engine.importJs("00-09 System/00 System management/00.13 Scripts/generated/state-machine.js");',
+		'return await mod.render(engine, app, context, component, container, { prop: "status", diagram: false, statusText: false });',
+		'```',
+		'',
+		'| **Usefulness** | `INPUT[slider(addLabels, minValue(1), maxValue(5), stepSize(1)):rating]` |',
+		'| -------------- | ------------------------------------------------------------------------ |',
+		'| **Read**       | `INPUT[toggle:read]`                                                     |',
+		'',
+		'`BUTTON[convert-to-clipping]`',
+		'',
+		'---',
+		'',
+		'### Status key',
+		'',
+		'| State       | Meaning                                                       |',
+		'| ----------- | ---------------------------------------------------- |',
+		'| captured    | Just added, not yet reviewed.                                 |',
+		'| clarified   | Has real annotation — not just a bare URL.                    |',
+		'| reviewed    | Re-checked: target still resolves, still says what\'s claimed. |',
+		'| updated     | Reviewed, then the target changed since.                      |',
+		'| superseded  | A better resource has replaced this one.                      |',
+		'| unavailable | Target no longer resolves.                                    |',
+		'| archived    | Converted to a paired Clipping; kept for provenance only.     |',
+		'',
+		'```meta-bind-button',
+		'id: convert-to-clipping',
+		'label: Convert to clipping…',
+		'icon: scissors',
+		'style: default',
+		'hidden: true',
+		'tooltip: "Fetch this URL via Defuddle and archive this link as a paired clipping"',
+		'actions:',
+		'  - type: inlineJS',
+		'    code: |',
+		'      await app.plugins.plugins.quickadd.api.executeChoice("Convert link to clipping…", {});',
+		'```',
+		'',
+	].join('\n');
+}
+
+/**
+ * Why a link note is here, said plainly. An item Safari could show something
+ * about keeps that; one whose page never arrived says so, because that is the
+ * fact a reader needs before following it.
+ */
+export function whyThisLink(item: ReadingListItem, failure?: string): string {
+	const preview = item.previewText ? item.previewText.replace(/\s+/gu, ' ').trim() : '';
+	const reason = failure
+		? `Saved from the Safari reading list. The page could not be fetched when this note was made: ${failure}.`
+		: 'Saved from the Safari reading list.';
+
+	return preview ? `${preview}\n\n${reason}` : reason;
 }

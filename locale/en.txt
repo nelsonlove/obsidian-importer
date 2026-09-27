@@ -2446,6 +2446,22 @@ translation=
 original=Pick the JSON file the export wrote. Several files import together, and a page listed more than once imports once.
 translation=
 
+[importer.safari-reading-list.name-note-kind]
+original=Import each page as
+translation=
+
+[importer.safari-reading-list.desc-note-kind]
+original=A clipping preserves the page: its body is what the page said. A link curates a pointer to it instead, with a place to say why it matters and a status to track. A page that cannot be fetched is always imported as a link, since there is nothing to preserve.
+translation=
+
+[importer.safari-reading-list.option-clipping]
+original=A clipping of the page
+translation=
+
+[importer.safari-reading-list.option-link]
+original=A link to the page
+translation=
+
 [importer.safari-reading-list.name-fetch-content]
 original=Fetch page content
 translation=

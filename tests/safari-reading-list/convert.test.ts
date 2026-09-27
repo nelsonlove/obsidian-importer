@@ -12,12 +12,15 @@ import assert from 'node:assert/strict';
 
 import {
 	canonicalUrl,
+	linkMarkdown,
+	noteKindFor,
 	parseReadingList,
 	readingListFrontMatter,
 	readingListTitle,
 	readingListVariables,
-	stubMarkdown,
 	templateSafe,
+	uuidv7,
+	whyThisLink,
 } from '../../src/formats/safari-reading-list/convert';
 
 const ENVELOPE = JSON.stringify({
@@ -151,23 +154,65 @@ test('extracted values sit under the item facts, and are kept where the item has
 	assert.equal(variables.words, 900);
 });
 
-test('frontmatter records the source, and description and site only when known', () => {
-	const [item, bare] = parseReadingList(ENVELOPE);
+const IDENTITY = {
+	title: 'How to identify propaganda',
+	uid: '01a0e000-0000-7000-8000-000000000001',
+	now: new Date(2026, 8, 27, 9, 30, 0),
+};
 
-	assert.deepEqual(readingListFrontMatter(item, 'fetched'), {
-		url: 'https://example.com/article?utm_source=x&id=7',
+test('a clipping carries the identity every note has, plus the fields its own class declares', () => {
+	const [item] = parseReadingList(ENVELOPE);
+
+	assert.deepEqual(readingListFrontMatter(item, 'fetched', { site: 'Example', author: 'A. Writer' }, 'clipping', IDENTITY), {
+		title: 'How to identify propaganda',
 		description: 'A short summary.',
-		added: '2026-04-29T13:00:18.788909',
-		read: false,
-		'import-status': 'fetched',
+		type: 'Note/Clipping/Web',
+		uid: '01a0e000-0000-7000-8000-000000000001',
+		created: '2026-04-29T13:00:18.788909',
+		modified: '2026-09-27T09:30:00',
+		status: 'captured',
+		tags: [],
+		url: 'https://example.com/article?utm_source=x&id=7',
+		source: 'Example',
+		author: ['A. Writer'],
+		clipped: '2026-09-27T09:30:00',
 	});
-	assert.deepEqual(readingListFrontMatter({ ...bare, siteName: 'Omni' }, 'unresolved'), {
-		url: 'https://omni-automation.com/omnifocus/actions.html',
-		site: 'Omni',
-		added: '2026-05-01T15:43:49.686175',
-		read: false,
-		'import-status': 'unresolved',
+});
+
+test('a link carries its own class fields instead, and holds no material', () => {
+	const [item] = parseReadingList(ENVELOPE);
+
+	assert.deepEqual(readingListFrontMatter({ ...item, dateLastViewed: '2026-05-01T00:00:00' }, 'fetched', {}, 'link', IDENTITY), {
+		title: 'How to identify propaganda',
+		description: 'A short summary.',
+		type: 'Note/Link',
+		uid: '01a0e000-0000-7000-8000-000000000001',
+		created: '2026-04-29T13:00:18.788909',
+		modified: '2026-09-27T09:30:00',
+		status: 'captured',
+		tags: [],
+		url: 'https://example.com/article?utm_source=x&id=7',
+		rating: '',
+		read: true,
+		clipping: '',
 	});
+});
+
+test('a page that did not arrive is a link even when a clipping was asked for', () => {
+	const [item] = parseReadingList(ENVELOPE);
+
+	assert.equal(noteKindFor('clipping', 'unresolved'), 'link');
+	assert.equal(noteKindFor('clipping', 'fetched'), 'clipping');
+	assert.equal(noteKindFor('link', 'fetched'), 'link');
+	assert.equal(readingListFrontMatter(item, 'unresolved', {}, 'clipping', IDENTITY).type, 'Note/Link');
+});
+
+test('a minted identity is a UUIDv7, so identities sort by when they were made', () => {
+	const earlier = uuidv7(new Date(2026, 0, 1).getTime());
+	const later = uuidv7(new Date(2026, 6, 1).getTime());
+
+	assert.match(earlier, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+	assert.ok(earlier < later, `${earlier} should sort before ${later}`);
 });
 
 test('the whole raw page never reaches a template, and neither does any absurd value', () => {
@@ -184,15 +229,22 @@ test('the whole raw page never reaches a template, and neither does any absurd v
 	assert.equal(safe.words, 900);
 });
 
-test('the stub for an unresolved item links the page and keeps the preview text', () => {
+test('why a link is here keeps the preview text and says when the page did not arrive', () => {
 	const [item, bare] = parseReadingList(ENVELOPE);
 
 	assert.equal(
-		stubMarkdown(item, 'HTTP 404'),
-		'[How to identify propaganda](https://example.com/article?utm_source=x&id=7)\n\n> A short summary.\n\nContent could not be fetched: HTTP 404\n',
+		whyThisLink(item, 'HTTP 404'),
+		'A short summary.\n\nSaved from the Safari reading list. The page could not be fetched when this note was made: HTTP 404.',
 	);
-	assert.equal(
-		stubMarkdown(bare),
-		'[PROJECT Sort Non-Sequential Project Tasks by Name](https://omni-automation.com/omnifocus/actions.html)\n\nContent was not fetched.\n',
-	);
+	assert.equal(whyThisLink(bare), 'Saved from the Safari reading list.');
+});
+
+test('a link note is written in the shape the vault gives its own link notes', () => {
+	const [item] = parseReadingList(ENVELOPE);
+	const body = linkMarkdown(item, 'Because it matters.');
+
+	assert.match(body, /\n## Why it matters\n\nBecause it matters\.\n/u);
+	assert.match(body, /\n### Status key\n/u);
+	assert.match(body, /\n`BUTTON\[convert-to-clipping\]`\n/u);
+	assert.match(body, /executeChoice\("Convert link to clipping…", \{\}\)/u);
 });

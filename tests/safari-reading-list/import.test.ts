@@ -77,15 +77,14 @@ test('a fetched page becomes a note with its extracted content and provenance', 
 	assert.match(content, /^---\n/u);
 	assert.match(content, /\nsource-url: https:\/\/example\.com\/article\n/u);
 	assert.match(content, /\nurl: https:\/\/example\.com\/article\?utm_source=x\n/u);
-	assert.match(content, /\nimport-status: fetched\n/u);
+	assert.match(content, /\ntype: Note\/Clipping\/Web\n/u);
 	assert.match(content, /\ndescription: Preview\.\n/u);
-	assert.match(content, /\nread: false\n/u);
 	assert.match(content, /The body text of the article/u);
 	assert.equal(ctx.notes, 1);
 	assert.deepEqual(ctx.failed, []);
 });
 
-test('a page that cannot be fetched still becomes a stub note, not a failure', async () => {
+test('a page that cannot be fetched still becomes a note, a link, not a failure', async () => {
 	const { vault, subject } = importer();
 	answerRequests(() => page('gone', 404));
 
@@ -93,25 +92,25 @@ test('a page that cannot be fetched still becomes a stub note, not a failure', a
 
 	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
 	const content = note(vault, 'Reading List/An article.md');
-	assert.match(content, /\nimport-status: unresolved\n/u);
-	assert.match(content, /\[An article\]\(https:\/\/example\.com\/article\?utm_source=x\)/u);
-	assert.match(content, /Content could not be fetched: HTTP 404/u);
+	assert.match(content, /\ntype: Note\/Link\n/u);
+	assert.match(content, /\n## Why it matters\n/u);
+	assert.match(content, /could not be fetched when this note was made: HTTP 404/u);
 	assert.equal(ctx.notes, 1);
 	assert.deepEqual(ctx.failed, []);
 });
 
-test('a response that is not HTML is a stub too', async () => {
+test('a response that is not HTML is a link too', async () => {
 	const { vault, subject } = importer();
 	answerRequests(() => page('%PDF-1.4', 200, 'application/pdf'));
 
 	await importing(subject, [readingList([ARTICLE])]);
 
 	const content = note(vault, 'Reading List/An article.md');
-	assert.match(content, /\nimport-status: unresolved\n/u);
-	assert.match(content, /not HTML \(application\/pdf\)/u);
+	assert.match(content, /\ntype: Note\/Link\n/u);
+	assert.match(content, /could not be fetched when this note was made: not HTML \(application\/pdf\)/u);
 });
 
-test('with content fetching off, nothing is requested and every note is a stub', async () => {
+test('with content fetching off, nothing is requested and every note is a link', async () => {
 	const { vault, subject } = importer();
 	answerRequests(() => {
 		throw new Error('must not fetch');
@@ -121,8 +120,8 @@ test('with content fetching off, nothing is requested and every note is a stub',
 	const ctx = await importing(subject, [readingList([ARTICLE])]);
 
 	const content = note(vault, 'Reading List/An article.md');
-	assert.match(content, /\nimport-status: unresolved\n/u);
-	assert.match(content, /Content was not fetched\./u);
+	assert.match(content, /\ntype: Note\/Link\n/u);
+	assert.match(content, /\n## Why it matters\n/u);
 	assert.deepEqual(ctx.failed, []);
 });
 
@@ -164,18 +163,18 @@ test('a page that cannot be fetched on a later run never replaces the content al
 	assert.deepEqual(ctx.failed, []);
 });
 
-test('a stub is replaced by the page once it can be fetched', async () => {
+test('a link is replaced by a clipping of the page once it can be fetched', async () => {
 	const { vault, subject } = importer();
 	answerRequests(() => page('gone', 404));
 	await importing(subject, [readingList([ARTICLE])]);
-	assert.match(note(vault, 'Reading List/An article.md'), /\nimport-status: unresolved\n/u);
+	assert.match(note(vault, 'Reading List/An article.md'), /\ntype: Note\/Link\n/u);
 
 	answerRequests(() => page(ARTICLE_HTML));
 	const ctx = await importing(subject, [readingList([ARTICLE])]);
 
 	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
 	const upgraded = note(vault, 'Reading List/An article.md');
-	assert.match(upgraded, /\nimport-status: fetched\n/u);
+	assert.match(upgraded, /\ntype: Note\/Clipping\/Web\n/u);
 	assert.match(upgraded, /The body text of the article/u);
 	assert.equal(ctx.notes, 1);
 });
@@ -273,7 +272,7 @@ test('copy mode writes a second note instead of matching the first', async () =>
 	assert.equal(vault.paths().length, 2);
 });
 
-test('a server error retried after the import was stopped writes no stub', async () => {
+test('a server error retried after the import was stopped writes no note', async () => {
 	const { vault, subject } = importer();
 	const ctx = new ImportContext();
 	let asked = 0;
@@ -315,7 +314,56 @@ test('a page whose fetch finishes is still written when the import is stopped du
 	await subject.import(ctx);
 
 	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
-	assert.match(note(vault, 'Reading List/An article.md'), /\nimport-status: fetched\n/u);
+	assert.match(note(vault, 'Reading List/An article.md'), /\ntype: Note\/Clipping\/Web\n/u);
+});
+
+test('a fetched page becomes a clipping of the page, typed and identified', async () => {
+	const { vault, subject } = importer();
+	answerRequests(() => page(ARTICLE_HTML));
+
+	await importing(subject, [readingList([ARTICLE])]);
+
+	const content = note(vault, 'Reading List/An article.md');
+	assert.match(content, /\ntype: Note\/Clipping\/Web\n/u);
+	assert.match(content, /\ntitle: An article\n/u);
+	assert.match(content, /\nuid: [0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\n/u);
+	assert.match(content, /\nstatus: captured\n/u);
+	assert.match(content, /\ncreated: 2026-04-29T13:00:18\n/u);
+	assert.match(content, /\nmodified: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\n/u);
+	assert.match(content, /\nclipped: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\n/u);
+	// The page itself is the body of a clipping, with nothing imposed on it.
+	assert.match(content, /The body text of the article/u);
+	assert.doesNotMatch(content, /## Why it matters/u);
+});
+
+test('asked for links instead, a fetched page becomes a link note in the vault link shape', async () => {
+	const { vault, subject } = importer();
+	answerRequests(() => page(ARTICLE_HTML));
+	subject.noteKind = 'link';
+
+	await importing(subject, [readingList([ARTICLE])]);
+
+	const content = note(vault, 'Reading List/An article.md');
+	assert.match(content, /\ntype: Note\/Link\n/u);
+	assert.match(content, /\nstatus: captured\n/u);
+	assert.match(content, /\nread: false\n/u);
+	assert.match(content, /\n## Why it matters\n/u);
+	assert.match(content, /\n### Status key\n/u);
+	assert.match(content, /BUTTON\[convert-to-clipping\]/u);
+	// A link points at the material; it does not hold it.
+	assert.doesNotMatch(content, /The body text of the article/u);
+});
+
+test('a page that cannot be fetched is a link whatever kind was asked for', async () => {
+	const { vault, subject } = importer();
+	answerRequests(() => page('gone', 404));
+
+	await importing(subject, [readingList([ARTICLE])]);
+
+	const content = note(vault, 'Reading List/An article.md');
+	assert.match(content, /\ntype: Note\/Link\n/u);
+	assert.match(content, /\n## Why it matters\n/u);
+	assert.match(content, /could not be fetched when this note was made: HTTP 404/u);
 });
 
 test('a page far too large to template still becomes a note', async () => {

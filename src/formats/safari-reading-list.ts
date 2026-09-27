@@ -8,6 +8,9 @@ import { convertHtmlDocument } from './html/convert';
 import {
 	canonicalUrl,
 	ImportStatus,
+	linkMarkdown,
+	NoteKind,
+	noteKindFor,
 	parseReadingList,
 	ReadingListItem,
 	readingListFrontMatter,
@@ -15,6 +18,8 @@ import {
 	readingListVariables,
 	stubMarkdown,
 	templateSafe,
+	uuidv7,
+	whyThisLink,
 } from './safari-reading-list/convert';
 
 const DEFAULT_OUTPUT_FOLDER = 'Reading List';
@@ -26,6 +31,8 @@ interface ResolvedItem {
 	markdown: string;
 	variables: Record<string, unknown>;
 	status: ImportStatus;
+	/** Why the page did not arrive, when it did not. */
+	failure?: string;
 }
 
 /** A fetch worth one more try: the server, not the page, said no. */
@@ -56,8 +63,18 @@ export class SafariReadingListImporter extends FormatImporter {
 	 */
 	fetchContent: boolean;
 
+	/**
+	 * Which kind of note each item becomes: a clipping that preserves the page,
+	 * or a link that curates a pointer to it. Clippings by default, because an
+	 * import exists to bring the material in. A page that did not arrive is a
+	 * link whatever this says — there is nothing to preserve. Set in init() for
+	 * the same reason as `fetchContent`.
+	 */
+	noteKind: NoteKind;
+
 	init(): void {
 		this.fetchContent = true;
+		this.noteKind = 'clipping';
 		this.idProperty = 'source-url';
 		this.idLabel = i18n.importer.safariReadingList.labelId();
 		this.duplicateCaveat = i18n.importer.safariReadingList.descSourceIdentity();
@@ -69,6 +86,19 @@ export class SafariReadingListImporter extends FormatImporter {
 			true,
 			i18n.importer.safariReadingList.descFiles(),
 		);
+
+		this.addSetting()
+			?.setName(i18n.importer.safariReadingList.nameNoteKind())
+			.setDesc(i18n.importer.safariReadingList.descNoteKind())
+			.addDropdown(dropdown => {
+				dropdown.addOption('clipping', i18n.importer.safariReadingList.optionClipping());
+				dropdown.addOption('link', i18n.importer.safariReadingList.optionLink());
+				dropdown.setValue(this.noteKind);
+				dropdown.onChange(value => {
+					this.noteKind = value === 'link' ? 'link' : 'clipping';
+					this.templateSettingsChanged();
+				});
+			});
 
 		this.addSetting()
 			?.setName(i18n.importer.safariReadingList.nameFetchContent())
@@ -120,10 +150,15 @@ export class SafariReadingListImporter extends FormatImporter {
 				const resolved = await this.resolve(ctx, item);
 				if (resolved === CANCELLED) break;
 				const title = readingListTitle(item, extractedTitle(resolved));
+				const path = this.sanitizeFilePath(`${this.outputLocation}/${title}.md`);
+				const body = noteBody(item, resolved, this.noteKind);
 				samples.push({
 					title,
-					path: this.sanitizeFilePath(`${this.outputLocation}/${title}.md`),
-					content: noteContent(item, resolved),
+					path,
+					content: serializeFrontMatter(readingListFrontMatter(
+						item, resolved.status, resolved.variables, this.noteKind,
+						{ title: basenameOf(path), uid: uuidv7(), now: new Date() },
+					)) + body,
 					variables: resolved.variables,
 					sourceId: canonicalUrl(item.url),
 					times: { ctime: parseTime(item.dateAdded) },
@@ -185,29 +220,45 @@ export class SafariReadingListImporter extends FormatImporter {
 		// would record a failure the next run has no reason to retry.
 		if (resolved === CANCELLED) return;
 
-		const content = noteContent(item, resolved);
+		// The body is planned before the frontmatter exists, because the note's own
+		// name is part of its frontmatter and only planning settles the name.
+		const body = noteBody(item, resolved, this.noteKind);
 		const sourceId = canonicalUrl(item.url);
 		const ctime = parseTime(item.dateAdded);
-		const planned = await this.planTemplatedNote(folder, readingListTitle(item, extractedTitle(resolved)), content, {
+		const planned = await this.planTemplatedNote(folder, readingListTitle(item, extractedTitle(resolved)), body, {
 			sourceId,
 			templateVariables: resolved.variables,
 			ctime,
 		});
-		const already = planned.file ? this.importStatusOf(planned.file) : null;
+		const already = planned.file ? this.noteKindOf(planned.file) : null;
 
-		// The page holds content and this run could not reach it: keep what is
-		// there. Overwriting it with a stub would lose the page AND make the note
-		// look imported, so no later run would fetch it again.
-		if (resolved.status === 'unresolved' && planned.file && already !== 'unresolved') {
+		// The page holds material and this run could not reach it: keep what is
+		// there. Overwriting it with a pointer would lose the page AND leave a note
+		// that looks imported, so no later run would fetch it again.
+		if (resolved.status === 'unresolved' && planned.file && already !== 'link') {
 			ctx.reportSkipped(name, i18n.importer.safariReadingList.reasonKeptImported());
 			return;
 		}
 
-		// A stub being replaced by the real page must be written, so the content is
-		// compared. Otherwise the item's own date stands as the note's source time,
-		// which leaves an unchanged page alone and preserves anything Nelson wrote
-		// into the note himself.
-		const mtime = already === 'unresolved' ? undefined : ctime;
+		const content = serializeFrontMatter(readingListFrontMatter(
+			item,
+			resolved.status,
+			resolved.variables,
+			this.noteKind,
+			{
+				// The note's name is its filename, which is what the linter keeps
+				// these two matching; its identity is minted once and then kept.
+				title: basenameOf(planned.targetPath),
+				uid: (planned.file && this.uidOf(planned.file)) || uuidv7(),
+				now: new Date(),
+			},
+		)) + body;
+
+		// A pointer being replaced by the page itself must be written, so the
+		// content is compared. Otherwise the item's own date stands as the note's
+		// source time, which leaves an unchanged page alone and preserves anything
+		// written into the note by hand.
+		const mtime = already === 'link' ? undefined : ctime;
 		const { written } = await this.writePlannedNote(ctx, planned, content, {
 			sourceId,
 			templateVariables: resolved.variables,
@@ -217,10 +268,17 @@ export class SafariReadingListImporter extends FormatImporter {
 		if (written) ctx.reportNoteSuccess(name);
 	}
 
-	/** What an earlier run recorded about this note, or null if nothing did. */
-	private importStatusOf(file: TFile): string | null {
-		const status: unknown = this.app.metadataCache?.getFileCache(file)?.frontmatter?.['import-status'];
-		return typeof status === 'string' && status ? status : null;
+	/** Which kind of note an earlier run left here, read from its own `type`. */
+	private noteKindOf(file: TFile): NoteKind | null {
+		const type: unknown = this.app.metadataCache?.getFileCache(file)?.frontmatter?.type;
+		if (typeof type !== 'string') return null;
+
+		return type === 'Note/Link' ? 'link' : 'clipping';
+	}
+
+	private uidOf(file: TFile): string | null {
+		const uid: unknown = this.app.metadataCache?.getFileCache(file)?.frontmatter?.uid;
+		return typeof uid === 'string' && uid ? uid : null;
 	}
 
 	private async resolve(ctx: ImportContext, item: ReadingListItem): Promise<ResolvedItem | typeof CANCELLED> {
@@ -256,11 +314,27 @@ function stub(item: ReadingListItem, failure?: string): ResolvedItem {
 		markdown: stubMarkdown(item, failure),
 		variables: readingListVariables(item, 'unresolved'),
 		status: 'unresolved',
+		failure,
 	};
 }
 
-function noteContent(item: ReadingListItem, resolved: ResolvedItem): string {
-	return serializeFrontMatter(readingListFrontMatter(item, resolved.status, resolved.variables)) + resolved.markdown;
+/**
+ * The note as it will be written: the frontmatter its class declares, then the
+ * body that kind of note carries. A clipping's body is the page, verbatim,
+ * because preserving what the source said is the only thing a clipping is for.
+ * A link's body is the vault's link shape: the pointer, why it is here, and its
+ * status — no material, whether or not the page arrived.
+ */
+function noteBody(item: ReadingListItem, resolved: ResolvedItem, asked: NoteKind): string {
+	return noteKindFor(asked, resolved.status) === 'clipping'
+		? resolved.markdown
+		: linkMarkdown(item, whyThisLink(item, resolved.failure));
+}
+
+/** A vault path's filename without its extension, which is the note's name. */
+function basenameOf(path: string): string {
+	const name = path.slice(path.lastIndexOf('/') + 1);
+	return name.replace(/\.md$/iu, '');
 }
 
 function extractedTitle(resolved: ResolvedItem): string | undefined {
