@@ -48,7 +48,7 @@ For example, a source property named `content` is available as `{{source.content
 | CSV | Every CSV column, addressed by its column header or generated column name. |
 | Google Keep | `isArchived`, `isPinned`, `isTrashed`, `color`, `labels`, `sharees`, and `annotations`. The source title remains available as `source.title`; labels are exposed as an array of names. |
 | HTML | `author`, `contentHtml`, `description`, `domain`, `favicon`, `fullHtml`, `image`, `language`, `published`, `site`, `url`, and `words`, plus extractor-specific values returned by Defuddle. |
-| Safari Reading List | `uuid`, `url` (as Safari saved it), `canonicalUrl` (the source ID: tracking parameters and fragment removed), `domain`, `dateAdded`, `dateLastViewed`, `read`, `previewText`, `siteName`, `imageUrl`, and `importStatus` (`fetched` or `unresolved`). When the page was fetched, every HTML variable above is available too; the item's own values take precedence. |
+| Safari reading list | `uuid`, `url` (as Safari saved it), `canonicalUrl` (the source ID: tracking parameters and fragment removed), `domain`, `dateAdded`, `dateLastViewed`, `read`, `previewText`, `siteName`, `imageUrl`, and `importStatus` (`fetched` or `unresolved`). When the page was fetched, every HTML variable above is available too; the item's own values take precedence. |
 
 ## Examples
 

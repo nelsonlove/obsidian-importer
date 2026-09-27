@@ -82,13 +82,31 @@ test('text that is not JSON, or JSON without a list, is an error', () => {
 	assert.throws(() => parseReadingList('42'));
 });
 
-test('the canonical URL drops tracking parameters, fragments, and case in the host', () => {
-	assert.equal(
-		canonicalUrl('HTTPS://Example.COM:443/Article/?utm_source=x&id=7&fbclid=abc#top'),
-		'https://example.com/Article?id=7',
-	);
+test('the canonical URL drops tracking parameters but keeps the ones that select content', () => {
+	assert.equal(canonicalUrl('https://example.com/a?utm_source=x&fbclid=abc&gclid=d'), 'https://example.com/a');
+	assert.equal(canonicalUrl('https://example.com/a?id=7&utm_campaign=y'), 'https://example.com/a?id=7');
+	assert.equal(canonicalUrl('https://example.com/a?page=2&q=safari'), 'https://example.com/a?page=2&q=safari');
+});
+
+test('the canonical URL drops a fragment that points within the page, and keeps one that selects it', () => {
+	assert.equal(canonicalUrl('https://example.com/a#section-3'), 'https://example.com/a');
+	assert.equal(canonicalUrl('https://groups.example.com/g/x#!topic/a'), 'https://groups.example.com/g/x#!topic/a');
+	assert.equal(canonicalUrl('https://app.example.com/#/inbox'), 'https://app.example.com/#/inbox');
+});
+
+test('the canonical URL normalizes the default port, the trailing slash and the host', () => {
+	assert.equal(canonicalUrl('HTTPS://Example.COM:443/Article/'), 'https://example.com/Article');
 	assert.equal(canonicalUrl('https://example.com/'), 'https://example.com/');
 	assert.equal(canonicalUrl('https://example.com'), 'https://example.com/');
+	// A path's case can matter, so it is left alone.
+	assert.notEqual(canonicalUrl('https://example.com/Article'), canonicalUrl('https://example.com/article'));
+});
+
+test('the canonical URL carries no credentials, so none reach a note', () => {
+	assert.equal(canonicalUrl('https://user:secret@example.com/a'), 'https://example.com/a');
+});
+
+test('a value that is not a web URL is returned as it came', () => {
 	assert.equal(canonicalUrl('not a url'), 'not a url');
 });
 

@@ -94,16 +94,32 @@ function readItem(entry: unknown): ReadingListItem | null {
 }
 
 /**
+ * A fragment that selects the page rather than a place within it, as the older
+ * hash-routed sites use: `#!topic/x`, `#/inbox`. Dropping one of these merges
+ * pages that are not the same page, so it is kept.
+ */
+function routesThePage(hash: string): boolean {
+	return hash.startsWith('#!') || hash.startsWith('#/');
+}
+
+/**
  * The URL as a dedupe key: the same page saved twice, once with a campaign
  * tag and once with a fragment, is one note. Anything that is not a web URL
  * is returned as it came.
+ *
+ * Deliberately not normalized: the scheme, so a page saved as http and later as
+ * https stays two notes rather than risking two different pages becoming one —
+ * a spare note is cheap and a lost one is not.
  */
 export function canonicalUrl(value: string): string {
 	const url = webUrl(value);
 	if (!url) return value;
 
-	url.hash = '';
-	url.hostname = url.hostname.toLowerCase();
+	if (!routesThePage(url.hash)) url.hash = '';
+
+	// Credentials identify a visitor, not a page, and must not reach a note.
+	url.username = '';
+	url.password = '';
 
 	const kept = [...url.searchParams].filter(([key]) => !TRACKING_PARAMS.test(key));
 	url.search = kept.length > 0 ? `?${new URLSearchParams(kept).toString()}` : '';

@@ -2,6 +2,18 @@
 original=Import notes
 translation=导入笔记
 
+[command.import-apple-notes]
+original=Import Apple Notes without the dialog
+translation=
+
+[command.msg-apple-notes-done]
+original=Apple Notes: {{imported}} imported, {{attachments}} attachments, {{skipped}} skipped, {{failed}} failed.
+translation=
+
+[command.msg-apple-notes-failed]
+original=Apple Notes import failed: {{reason}}
+translation=
+
 [nouns.file-with-count]
 original={{count}} file
 translation={{count}} 个文件
@@ -2407,15 +2419,15 @@ original=Unexpected file extension
 translation=意外的扩展名
 
 [importer.safari-reading-list.name]
-original=Safari Reading List
+original=Safari reading list
 translation=
 
 [importer.safari-reading-list.option-text]
-original=Safari Reading List (.json)
+original=Safari reading list (.json)
 translation=
 
 [importer.safari-reading-list.file-type]
-original=Reading List export
+original=Reading list export
 translation=
 
 [importer.safari-reading-list.label-id]
@@ -2427,7 +2439,7 @@ original=Notes are matched by the page URL with tracking parameters removed, so 
 translation=
 
 [importer.safari-reading-list.desc-export]
-original=Export your Reading List as JSON with the safari-py command line tool: safari --json reading-list > reading-list.json. Each item keeps its title, URL, date added and preview text.
+original=Export your reading list as JSON with the safari-py command line tool: safari --json reading-list > reading-list.json. Each item keeps its title, URL, date added and preview text.
 translation=
 
 [importer.safari-reading-list.desc-files]
@@ -2447,7 +2459,15 @@ original=Fetching {{name}}...
 translation=
 
 [importer.safari-reading-list.reason-no-items]
-original=no Reading List items with a web address
+original=no reading list items with a web address
+translation=
+
+[importer.safari-reading-list.reason-same-address]
+original=another item in this export has the same address
+translation=
+
+[importer.safari-reading-list.reason-kept-imported]
+original=the page could not be fetched, and its note already holds the page
 translation=
 
 [importer.textbundle.name]

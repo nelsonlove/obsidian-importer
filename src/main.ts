@@ -1,5 +1,5 @@
 import { App, getLanguage, Modal, Notice, Platform, Plugin } from 'obsidian';
-import { FormatImporter, ImporterHost } from './format-importer';
+import { DuplicateHandling, FormatImporter, ImporterHost } from './format-importer';
 import { NodePickedFile } from './filesystem';
 import { AuthCallback } from './constants';
 import { ImportContext } from './import-context';
@@ -216,17 +216,21 @@ export default class ImporterPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'apple-notes-headless',
-			name: 'Import Apple Notes (headless)',
+			name: i18n.command.importAppleNotes(),
 			callback: async () => {
 				try {
 					const report = await this.importAppleNotesHeadless();
-					new Notice(
-						`Apple Notes: imported ${report.imported}, ${report.attachments} attachments, ` +
-						`${report.skipped} skipped, ${report.failed} failed.`
-					);
+					new Notice(i18n.command.msgAppleNotesDone({
+						imported: report.imported,
+						attachments: report.attachments,
+						skipped: report.skipped,
+						failed: report.failed,
+					}));
 				}
 				catch (error) {
-					new Notice(`Apple Notes import failed: ${error instanceof Error ? error.message : String(error)}`);
+					new Notice(i18n.command.msgAppleNotesFailed({
+						reason: error instanceof Error ? error.message : String(error),
+					}));
 					console.error('[importer] apple-notes-headless failed', error);
 				}
 			},
@@ -321,7 +325,13 @@ export default class ImporterPlugin extends Plugin {
 		// removes an un-imported note).
 		const startedAt = new Date();
 		const ctx = new ImportContext();
+		// The two steps the modal's flow performs around an import, and a headless
+		// run needs just as much: the index is what lets an earlier note be found
+		// by its recorded ID rather than only by its path, so a note that has since
+		// been renamed is updated instead of duplicated.
+		importer.indexImportedNotes();
 		await importer.import(ctx);
+		await importer.finalizeMarkdownOutput(ctx);
 
 		let disposed = 0;
 		if (disposition !== 'none' && !ctx.cancelled) {
@@ -371,6 +381,12 @@ export default class ImporterPlugin extends Plugin {
 		// Set AFTER `ready`, for the same reason as the Apple Notes path above.
 		importer.noteTitleTemplate = noteTitleTemplate;
 		importer.fetchContent = fetchContent;
+		// Pinned, not inherited: `ready` loads whatever was last chosen in the
+		// dialog, and a saved "Create copy" would add a file on every headless run
+		// while a saved "Skip" could never update one. Recording the source URL is
+		// what matches a note on the next run, so it is not optional here either.
+		importer.duplicateHandling = DuplicateHandling.Update;
+		importer.saveSourceId = true;
 		importer.files = [new NodePickedFile(manifestPath)];
 
 		const ctx = new ImportContext();

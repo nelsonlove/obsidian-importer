@@ -126,45 +126,124 @@ test('with content fetching off, nothing is requested and every note is a stub',
 	assert.deepEqual(ctx.failed, []);
 });
 
-test('a second run matches the note by source URL and does not create a duplicate', async () => {
-	const { vault, subject } = importer();
-	answerRequests(() => page(ARTICLE_HTML));
-	await importing(subject, [readingList([ARTICLE])]);
-
-	// The same page saved again has a fresh UUID, other tracking parameters and
-	// a new title, but the same canonical URL, so it is the same note.
-	const again = { ...ARTICLE, uuid: 'A-2', url: 'https://example.com/article?utm_campaign=y', title: 'An article, retitled' };
-	answerRequests(() => page(ARTICLE_HTML.replace(/An article/gu, 'An article, retitled')));
-	const ctx = await importing(subject, [readingList([again])]);
-
-	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
-	assert.equal(ctx.notes + ctx.skipped.length, 1);
-	assert.deepEqual(ctx.failed, []);
-});
-
-test('an unchanged page on a second run is left alone', async () => {
+test('the same page saved again matches its note and leaves it as it is', async () => {
 	const { vault, subject } = importer();
 	answerRequests(() => page(ARTICLE_HTML));
 	await importing(subject, [readingList([ARTICLE])]);
 	const before = note(vault, 'Reading List/An article.md');
 
-	const ctx = await importing(subject, [readingList([ARTICLE])]);
+	// A fresh UUID, other tracking parameters and a new title, but the same
+	// canonical URL, so it is the same note — matched by the recorded source URL
+	// and not written again, so the import does not churn.
+	const again = { ...ARTICLE, uuid: 'A-2', url: 'https://example.com/article?utm_campaign=y', title: 'An article, retitled' };
+	answerRequests(() => page(ARTICLE_HTML.replace(/An article/gu, 'An article, retitled')));
+	const ctx = await importing(subject, [readingList([again])]);
 
+	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
 	assert.equal(note(vault, 'Reading List/An article.md'), before);
 	assert.equal(ctx.notes, 0);
 	assert.equal(ctx.skipped.length, 1);
+	assert.deepEqual(ctx.failed, []);
 });
 
-test('two entries for one page in the same file import once', async () => {
+test('a page that cannot be fetched on a later run never replaces the content already imported', async () => {
+	const { vault, subject } = importer();
+	answerRequests(() => page(ARTICLE_HTML));
+	await importing(subject, [readingList([ARTICLE])]);
+	const imported = note(vault, 'Reading List/An article.md');
+	assert.match(imported, /The body text of the article/u);
+
+	// The site is down this time. The note holds the page; a stub would lose it
+	// and, being a note with the same source URL, would look imported forever.
+	answerRequests(() => page('down', 503));
+	const ctx = await importing(subject, [readingList([ARTICLE])]);
+
+	assert.equal(note(vault, 'Reading List/An article.md'), imported);
+	assert.equal(ctx.notes, 0);
+	assert.equal(ctx.skipped.length, 1);
+	assert.deepEqual(ctx.failed, []);
+});
+
+test('a stub is replaced by the page once it can be fetched', async () => {
+	const { vault, subject } = importer();
+	answerRequests(() => page('gone', 404));
+	await importing(subject, [readingList([ARTICLE])]);
+	assert.match(note(vault, 'Reading List/An article.md'), /\nimport-status: unresolved\n/u);
+
+	answerRequests(() => page(ARTICLE_HTML));
+	const ctx = await importing(subject, [readingList([ARTICLE])]);
+
+	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
+	const upgraded = note(vault, 'Reading List/An article.md');
+	assert.match(upgraded, /\nimport-status: fetched\n/u);
+	assert.match(upgraded, /The body text of the article/u);
+	assert.equal(ctx.notes, 1);
+});
+
+test('a note written after the page was saved is left alone', async () => {
+	const { vault, subject } = importer();
+	// A note that already sits where this item would land, touched more recently
+	// than Safari saved the item: the item's own date is what the import compares
+	// against, so anything newer is the reader's and is kept.
+	const mine = 'My own note about that article.\n';
+	await vault.create('Reading List/An article.md', mine, { ctime: Date.now(), mtime: Date.now() });
+	answerRequests(() => page(ARTICLE_HTML));
+
+	const ctx = await importing(subject, [readingList([ARTICLE])]);
+
+	assert.equal(note(vault, 'Reading List/An article.md'), mine);
+	assert.equal(ctx.notes, 0);
+	assert.deepEqual(ctx.failed, []);
+});
+
+test('a network failure is retried, and then leaves a stub saying so', async () => {
+	const { vault, subject } = importer();
+	let asked = 0;
+	answerRequests(() => {
+		asked++;
+		// Not a status: offline, DNS, a refused connection. requestUrl rejects.
+		throw new Error('net::ERR_NAME_NOT_RESOLVED');
+	});
+
+	const ctx = await importing(subject, [readingList([ARTICLE])]);
+
+	assert.equal(asked, 2);
+	assert.match(note(vault, 'Reading List/An article.md'), /ERR_NAME_NOT_RESOLVED/u);
+	assert.deepEqual(ctx.failed, []);
+});
+
+test('the fetch toggle reports the state the import will actually use', async () => {
+	const { subject } = importer();
+	await subject.ready;
+
+	// The base class calls init() from its constructor, so a field initializer
+	// would still be undefined while the toggle was being drawn.
+	assert.equal(subject.fetchContent, true);
+});
+
+test('two entries for one page in the same file import once, and the second is reported', async () => {
 	const { vault, subject } = importer();
 	answerRequests(() => page(ARTICLE_HTML));
 
-	await importing(subject, [readingList([
+	const ctx = await importing(subject, [readingList([
 		ARTICLE,
 		{ ...ARTICLE, uuid: 'A-3', url: 'https://example.com/article#section' },
 	])]);
 
 	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
+	assert.equal(ctx.skipped.length, 1);
+});
+
+test('hash-routed pages are separate pages', async () => {
+	const { vault, subject } = importer();
+	answerRequests(() => page('<main><p>Body</p></main>'));
+
+	await importing(subject, [readingList([
+		{ title: 'Topic A', uuid: 'H-1', url: 'https://groups.example.com/g/x#!topic/a' },
+		{ title: 'Topic B', uuid: 'H-2', url: 'https://groups.example.com/g/x#!topic/b' },
+	])]);
+
+	assert.deepEqual(vault.paths(), ['Reading List/Topic A.md', 'Reading List/Topic B.md']);
 });
 
 test('a file that is not a reading list fails on its own, and an export with no web URLs is skipped', async () => {

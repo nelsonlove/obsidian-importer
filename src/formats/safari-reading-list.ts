@@ -1,4 +1,4 @@
-import { Notice, requestUrl, TFolder } from 'obsidian';
+import { Notice, requestUrl, RequestUrlResponse, TFile, TFolder } from 'obsidian';
 import { decodeText } from '../encoding';
 import { FormatImporter, NoteTemplateSample, TEMPLATE_PREVIEW_LIMIT } from '../format-importer';
 import { i18n } from '../i18n';
@@ -48,10 +48,15 @@ export class SafariReadingListImporter extends FormatImporter {
 
 	interruption = 'pause' as const;
 
-	/** Fetch each page and keep its content; off writes link stubs only. */
-	fetchContent = true;
+	/**
+	 * Fetch each page and keep its content; off writes link stubs only. Set in
+	 * init(), not here: the base class calls init() from its constructor, before
+	 * a subclass field initializer would run.
+	 */
+	fetchContent: boolean;
 
 	init(): void {
+		this.fetchContent = true;
 		this.idProperty = 'source-url';
 		this.idLabel = i18n.importer.safariReadingList.labelId();
 		this.duplicateCaveat = i18n.importer.safariReadingList.descSourceIdentity();
@@ -155,7 +160,13 @@ export class SafariReadingListImporter extends FormatImporter {
 
 			for (const item of parsed) {
 				const key = canonicalUrl(item.url);
-				if (seen.has(key)) continue;
+				// Said out loud rather than dropped quietly: two entries that look
+				// like one page may not be one page, and a silently vanished item
+				// still leaves the totals adding up.
+				if (seen.has(key)) {
+					ctx.reportSkipped(readingListTitle(item), i18n.importer.safariReadingList.reasonSameAddress());
+					continue;
+				}
 				seen.add(key);
 				items.push(item);
 			}
@@ -173,12 +184,42 @@ export class SafariReadingListImporter extends FormatImporter {
 		// would record a failure the next run has no reason to retry.
 		if (resolved === CANCELLED) return;
 
-		const { written } = await this.writeNote(ctx, folder, readingListTitle(item, extractedTitle(resolved)), noteContent(item, resolved), {
-			sourceId: canonicalUrl(item.url),
+		const content = noteContent(item, resolved);
+		const sourceId = canonicalUrl(item.url);
+		const ctime = parseTime(item.dateAdded);
+		const planned = await this.planTemplatedNote(folder, readingListTitle(item, extractedTitle(resolved)), content, {
+			sourceId,
 			templateVariables: resolved.variables,
-			ctime: parseTime(item.dateAdded),
+			ctime,
+		});
+		const already = planned.file ? this.importStatusOf(planned.file) : null;
+
+		// The page holds content and this run could not reach it: keep what is
+		// there. Overwriting it with a stub would lose the page AND make the note
+		// look imported, so no later run would fetch it again.
+		if (resolved.status === 'unresolved' && planned.file && already !== 'unresolved') {
+			ctx.reportSkipped(name, i18n.importer.safariReadingList.reasonKeptImported());
+			return;
+		}
+
+		// A stub being replaced by the real page must be written, so the content is
+		// compared. Otherwise the item's own date stands as the note's source time,
+		// which leaves an unchanged page alone and preserves anything Nelson wrote
+		// into the note himself.
+		const mtime = already === 'unresolved' ? undefined : ctime;
+		const { written } = await this.writePlannedNote(ctx, planned, content, {
+			sourceId,
+			templateVariables: resolved.variables,
+			ctime,
+			mtime,
 		});
 		if (written) ctx.reportNoteSuccess(name);
+	}
+
+	/** What an earlier run recorded about this note, or null if nothing did. */
+	private importStatusOf(file: TFile): string | null {
+		const status: unknown = this.app.metadataCache?.getFileCache(file)?.frontmatter?.['import-status'];
+		return typeof status === 'string' && status ? status : null;
 	}
 
 	private async resolve(ctx: ImportContext, item: ReadingListItem): Promise<ResolvedItem | typeof CANCELLED> {
@@ -245,7 +286,7 @@ async function withTimeout<T>(work: Promise<T> | T, ms: number): Promise<T> {
 		return await Promise.race([Promise.resolve(work), timeout]);
 	}
 	finally {
-		if (timer) window.clearTimeout(timer);
+		if (timer !== undefined) window.clearTimeout(timer);
 	}
 }
 
@@ -258,13 +299,30 @@ function sleep(ms: number): Promise<void> {
  * one more try; a 4xx does not, since the page said no. `requestUrl` is not
  * bound by browser CORS rules, so this works for any site.
  */
+/**
+ * The page's response, where a failure to reach the server at all — offline,
+ * DNS, a refused connection, a bad certificate — is reported as worth another
+ * try. That failure arrives as a thrown error rather than as a status, which is
+ * the case most worth retrying and the easiest to mistake for a page saying no.
+ */
+async function requestPage(url: string): Promise<RequestUrlResponse> {
+	try {
+		return await withTimeout(requestUrl({ url, throw: false, headers: { Accept: ACCEPT } }), FETCH_TIMEOUT_MS);
+	}
+	catch (error) {
+		throw error instanceof RetryableError
+			? error
+			: new RetryableError(extractErrorMessage(error) ?? 'the request failed');
+	}
+}
+
 async function fetchHtml(url: string, isCancelled: () => boolean): Promise<string> {
 	let lastError: unknown;
 
 	for (let attempt = 0; attempt < 2; attempt++) {
 		if (isCancelled()) throw new CancelledError('cancelled');
 		try {
-			const response = await withTimeout(requestUrl({ url, throw: false, headers: { Accept: ACCEPT } }), FETCH_TIMEOUT_MS);
+			const response = await requestPage(url);
 			if (response.status >= 500) throw new RetryableError(`HTTP ${response.status}`);
 			if (response.status >= 400) throw new Error(`HTTP ${response.status}`);
 

@@ -17,6 +17,9 @@
 export const en = {
 	command: {
 		importNotes: 'Import notes',
+		importAppleNotes: 'Import Apple Notes without the dialog',
+		msgAppleNotesDone: 'Apple Notes: {{imported}} imported, {{attachments}} attachments, {{skipped}} skipped, {{failed}} failed.',
+		msgAppleNotesFailed: 'Apple Notes import failed: {{reason}}',
 	},
 
 	nouns: {
@@ -698,17 +701,19 @@ export const en = {
 			reasonUnexpectedExtension: 'Unexpected file extension',
 		},
 		safariReadingList: {
-			name: 'Safari Reading List',
-			optionText: 'Safari Reading List (.json)',
-			fileType: 'Reading List export',
+			name: 'Safari reading list',
+			optionText: 'Safari reading list (.json)',
+			fileType: 'Reading list export',
 			labelId: 'Source URL',
 			descSourceIdentity: 'Notes are matched by the page URL with tracking parameters removed, so a page saved again updates its note instead of adding one.',
-			descExport: 'Export your Reading List as JSON with the safari-py command line tool: safari --json reading-list > reading-list.json. Each item keeps its title, URL, date added and preview text.',
+			descExport: 'Export your reading list as JSON with the safari-py command line tool: safari --json reading-list > reading-list.json. Each item keeps its title, URL, date added and preview text.',
 			descFiles: 'Pick the JSON file the export wrote. Several files import together, and a page listed more than once imports once.',
 			nameFetchContent: 'Fetch page content',
 			descFetchContent: 'Download each page and keep its main content, as the HTML importer does. A page that cannot be fetched becomes a note holding its title, link and preview text. If disabled, every note is written that way.',
 			statusFetching: 'Fetching {{name}}...',
-			reasonNoItems: 'no Reading List items with a web address',
+			reasonNoItems: 'no reading list items with a web address',
+			reasonSameAddress: 'another item in this export has the same address',
+			reasonKeptImported: 'the page could not be fetched, and its note already holds the page',
 		},
 		textbundle: {
 			name: 'Textbundle files',
