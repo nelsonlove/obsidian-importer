@@ -2406,6 +2406,50 @@ translation=শিরোনাম খালি
 original=Unexpected file extension
 translation=অপ্রত্যাশিত ফাইল এক্সটেনশন
 
+[importer.safari-reading-list.name]
+original=Safari Reading List
+translation=
+
+[importer.safari-reading-list.option-text]
+original=Safari Reading List (.json)
+translation=
+
+[importer.safari-reading-list.file-type]
+original=Reading List export
+translation=
+
+[importer.safari-reading-list.label-id]
+original=Source URL
+translation=
+
+[importer.safari-reading-list.desc-source-identity]
+original=Notes are matched by the page URL with tracking parameters removed, so a page saved again updates its note instead of adding one.
+translation=
+
+[importer.safari-reading-list.desc-export]
+original=Export your Reading List as JSON with the safari-py command line tool: safari --json reading-list > reading-list.json. Each item keeps its title, URL, date added and preview text.
+translation=
+
+[importer.safari-reading-list.desc-files]
+original=Pick the JSON file the export wrote. Several files import together, and a page listed more than once imports once.
+translation=
+
+[importer.safari-reading-list.name-fetch-content]
+original=Fetch page content
+translation=
+
+[importer.safari-reading-list.desc-fetch-content]
+original=Download each page and keep its main content, as the HTML importer does. A page that cannot be fetched becomes a note holding its title, link and preview text. If disabled, every note is written that way.
+translation=
+
+[importer.safari-reading-list.status-fetching]
+original=Fetching {{name}}...
+translation=
+
+[importer.safari-reading-list.reason-no-items]
+original=no Reading List items with a web address
+translation=
+
 [importer.textbundle.name]
 original=Textbundle files
 translation=Textbundle ফাইল

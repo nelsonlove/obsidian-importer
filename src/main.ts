@@ -6,6 +6,7 @@ import { ImportContext } from './import-context';
 import { DEFAULT_DATA, ImporterData } from './plugin-data';
 import { ImporterDefinition, IMPORTERS, importerName } from './importers';
 import { AppleNotesImporter } from './formats/apple-notes';
+import { SafariReadingListImporter } from './formats/safari-reading-list';
 import { ImporterFlow, ImporterShell } from './importer-flow';
 import { ImporterSettingTab } from './importer-setting-tab';
 import { i18n, setLanguage } from './i18n';
@@ -66,8 +67,32 @@ export interface AppleNotesHeadlessReport {
 	finishedAt: string;
 }
 
+export interface ReadingListHeadlessOptions {
+	/** Absolute path of the JSON that `safari --json reading-list` wrote. */
+	manifestPath: string;
+	/** Vault folder to import into; created if missing. Defaults to "Reading List". */
+	outputFolder?: string;
+	/** Template for each note's title. Default `"{{title}}"`, the Reading List item's title. */
+	noteTitleTemplate?: string;
+	/** Fetch each page and keep its content; false writes link stubs only. Default true. */
+	fetchContent?: boolean;
+}
+
+export interface ReadingListHeadlessReport {
+	manifestPath: string;
+	outputFolder: string;
+	noteTitleTemplate: string;
+	fetchContent: boolean;
+	imported: number;
+	skipped: number;
+	failed: number;
+	cancelled: boolean;
+	finishedAt: string;
+}
+
 export interface ImporterApi {
 	importAppleNotes(options?: AppleNotesHeadlessOptions): Promise<AppleNotesHeadlessReport>;
+	importReadingList(options: ReadingListHeadlessOptions): Promise<ReadingListHeadlessReport>;
 }
 
 /**
@@ -186,6 +211,7 @@ export default class ImporterPlugin extends Plugin {
 
 		this.api = {
 			importAppleNotes: (options = {}) => this.importAppleNotesHeadless(options),
+			importReadingList: options => this.importReadingListHeadless(options),
 		};
 
 		this.addCommand({
@@ -313,6 +339,54 @@ export default class ImporterPlugin extends Plugin {
 			disposition,
 			dispositionDryRun,
 			disposed,
+			finishedAt: new Date().toISOString(),
+		};
+	}
+
+	/**
+	 * Runs the Safari Reading List importer without opening the modal, on the
+	 * JSON at `manifestPath`, into `outputFolder` (created if needed), and
+	 * resolves with a summary. Exposed on `this.api.importReadingList` so an
+	 * automation can trigger it and await completion. Notes are matched across
+	 * runs by their source URL, so re-running with the same export is safe.
+	 */
+	async importReadingListHeadless(options: ReadingListHeadlessOptions): Promise<ReadingListHeadlessReport> {
+		const manifestPath = options.manifestPath?.trim();
+		if (!manifestPath) throw new Error('manifestPath is required: the JSON that `safari --json reading-list` wrote.');
+		const outputFolder = options.outputFolder?.trim() || 'Reading List';
+		const noteTitleTemplate = options.noteTitleTemplate?.trim() || '{{title}}';
+		const fetchContent = options.fetchContent ?? true;
+
+		const host: ImporterHost = {
+			sourceEl: null,
+			outputEl: null,
+			optionsEl: null,
+			plugin: this,
+			importerId: 'safari-reading-list',
+			abortController: new AbortController(),
+		};
+		const importer = new SafariReadingListImporter(this.app, host);
+		await importer.ready;
+		importer.outputLocation = outputFolder;
+		// Set AFTER `ready`, for the same reason as the Apple Notes path above.
+		importer.noteTitleTemplate = noteTitleTemplate;
+		importer.fetchContent = fetchContent;
+		importer.files = [new NodePickedFile(manifestPath)];
+
+		const ctx = new ImportContext();
+		importer.indexImportedNotes();
+		await importer.import(ctx);
+		await importer.finalizeMarkdownOutput(ctx);
+
+		return {
+			manifestPath,
+			outputFolder,
+			noteTitleTemplate,
+			fetchContent,
+			imported: ctx.notes,
+			skipped: ctx.skipped.length,
+			failed: ctx.failed.length,
+			cancelled: ctx.cancelled,
 			finishedAt: new Date().toISOString(),
 		};
 	}
