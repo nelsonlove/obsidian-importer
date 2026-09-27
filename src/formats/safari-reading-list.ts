@@ -30,6 +30,12 @@ interface ResolvedItem {
 /** A fetch worth one more try: the server, not the page, said no. */
 class RetryableError extends Error {}
 
+/** The import was stopped while this page was in flight. */
+class CancelledError extends Error {}
+
+/** What `resolve` answers when the import was stopped: write nothing. */
+const CANCELLED = Symbol('cancelled');
+
 /**
  * Imports a Safari Reading List from the JSON that safari-py exports. Each
  * item's page is fetched and its main content extracted the way the HTML
@@ -106,6 +112,7 @@ export class SafariReadingListImporter extends FormatImporter {
 			if (samples.length >= TEMPLATE_PREVIEW_LIMIT || await ctx.shouldStop()) break;
 			try {
 				const resolved = await this.resolve(ctx, item);
+				if (resolved === CANCELLED) break;
 				const title = readingListTitle(item, extractedTitle(resolved));
 				samples.push({
 					title,
@@ -162,6 +169,10 @@ export class SafariReadingListImporter extends FormatImporter {
 		ctx.status(i18n.importer.safariReadingList.statusFetching({ name }));
 
 		const resolved = await this.resolve(ctx, item);
+		// A fetch stopped part-way is not an unresolved page: writing a stub for it
+		// would record a failure the next run has no reason to retry.
+		if (resolved === CANCELLED) return;
+
 		const { written } = await this.writeNote(ctx, folder, readingListTitle(item, extractedTitle(resolved)), noteContent(item, resolved), {
 			sourceId: canonicalUrl(item.url),
 			templateVariables: resolved.variables,
@@ -170,7 +181,7 @@ export class SafariReadingListImporter extends FormatImporter {
 		if (written) ctx.reportNoteSuccess(name);
 	}
 
-	private async resolve(ctx: ImportContext, item: ReadingListItem): Promise<ResolvedItem> {
+	private async resolve(ctx: ImportContext, item: ReadingListItem): Promise<ResolvedItem | typeof CANCELLED> {
 		if (!this.fetchContent) return stub(item);
 
 		let html: string;
@@ -178,6 +189,7 @@ export class SafariReadingListImporter extends FormatImporter {
 			html = await fetchHtml(item.url, () => ctx.isCancelled());
 		}
 		catch (error) {
+			if (error instanceof CancelledError) return CANCELLED;
 			return stub(item, extractErrorMessage(error) ?? String(error));
 		}
 
@@ -250,7 +262,7 @@ async function fetchHtml(url: string, isCancelled: () => boolean): Promise<strin
 	let lastError: unknown;
 
 	for (let attempt = 0; attempt < 2; attempt++) {
-		if (isCancelled()) throw new Error('cancelled');
+		if (isCancelled()) throw new CancelledError('cancelled');
 		try {
 			const response = await withTimeout(requestUrl({ url, throw: false, headers: { Accept: ACCEPT } }), FETCH_TIMEOUT_MS);
 			if (response.status >= 500) throw new RetryableError(`HTTP ${response.status}`);
@@ -266,7 +278,8 @@ async function fetchHtml(url: string, isCancelled: () => boolean): Promise<strin
 		catch (error) {
 			lastError = error;
 			if (!(error instanceof RetryableError)) throw error;
-			await sleep(RETRY_DELAY_MS);
+			// No point pausing after the last attempt.
+			if (attempt === 0) await sleep(RETRY_DELAY_MS);
 		}
 	}
 

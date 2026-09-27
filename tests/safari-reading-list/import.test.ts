@@ -194,6 +194,51 @@ test('copy mode writes a second note instead of matching the first', async () =>
 	assert.equal(vault.paths().length, 2);
 });
 
+test('a server error retried after the import was stopped writes no stub', async () => {
+	const { vault, subject } = importer();
+	const ctx = new ImportContext();
+	let asked = 0;
+	answerRequests(() => {
+		asked++;
+		// The server failed, so the fetch will be retried; the user stops the import
+		// during the pause before that retry. The page's fate is unknown at that
+		// point, and a stub would record a failure the next run has no reason to
+		// retry, so nothing is written.
+		ctx.cancel();
+		return page('busy', 503);
+	});
+
+	await subject.ready;
+	subject.files = [readingList([ARTICLE])];
+	subject.outputLocation = 'Reading List';
+	subject.indexImportedNotes();
+	await subject.import(ctx);
+
+	assert.equal(asked, 1);
+	assert.deepEqual(vault.paths(), []);
+	assert.deepEqual(ctx.failed, []);
+});
+
+test('a page whose fetch finishes is still written when the import is stopped during it', async () => {
+	const { vault, subject } = importer();
+	const ctx = new ImportContext();
+	answerRequests(() => {
+		// The content did arrive, so it is kept: an item already begun finishes,
+		// which is how the other importers behave.
+		ctx.cancel();
+		return page(ARTICLE_HTML);
+	});
+
+	await subject.ready;
+	subject.files = [readingList([ARTICLE])];
+	subject.outputLocation = 'Reading List';
+	subject.indexImportedNotes();
+	await subject.import(ctx);
+
+	assert.deepEqual(vault.paths(), ['Reading List/An article.md']);
+	assert.match(note(vault, 'Reading List/An article.md'), /\nimport-status: fetched\n/u);
+});
+
 test('a title spread over lines, or missing, still names a file', async () => {
 	const { vault, subject } = importer();
 	answerRequests(() => page('<main><p>Body</p></main>'));
