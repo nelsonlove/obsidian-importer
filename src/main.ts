@@ -53,11 +53,15 @@ export interface AppleNotesHeadlessOptions {
 	/** Preview only — count what disposition WOULD move/delete, without touching Notes. */
 	dispositionDryRun?: boolean;
 	/**
-	 * Import only notes created after this time (ISO 8601 string or ms since the
-	 * epoch). Older notes are not read, so a vault copy that was deleted on
-	 * purpose is not brought back by a scheduled run. Default: every note.
+	 * Read only the notes modified after this time (ISO 8601 string, or ms since
+	 * the epoch): new notes and edited ones. Older notes are not read, so a vault
+	 * copy that was filed away or deleted on purpose is not brought back by a
+	 * scheduled run. Not combinable with a source disposition, which would act on
+	 * the older notes this run did not import. With it set, duplicate handling is
+	 * Update and the source id is recorded, whatever the dialog saved, so a
+	 * scheduled run never adds a second copy. Default: every note, as before.
 	 */
-	createdAfter?: string | number;
+	changedAfter?: string | number;
 }
 
 export interface AppleNotesHeadlessReport {
@@ -71,10 +75,22 @@ export interface AppleNotesHeadlessReport {
 	disposition: AppleNotesDisposition;
 	dispositionDryRun: boolean;
 	disposed: number;
-	/** The createdAfter cut-off used, as ISO 8601, or null when every note was considered. */
-	createdAfter: string | null;
-	/** When this run started, as ISO 8601: the cut-off to pass as createdAfter next time. */
+	/** The changedAfter cut-off used, as ISO 8601, or null when every note was read. */
+	changedAfter: string | null;
+	/**
+	 * True only when every selected note was read to the end, none failed and
+	 * none was skipped for a reason a later run could clear (a locked note).
+	 */
+	complete: boolean;
+	/** When this run started, as ISO 8601. */
 	startedAt: string;
+	/**
+	 * The cut-off a caller can pass as changedAfter next time: startedAt when the
+	 * run was complete, else null (keep the old cut-off, so nothing is lost).
+	 * A caller should still go back a margin from it, because a note from another
+	 * device can arrive through iCloud later than its modification time.
+	 */
+	nextChangedAfter: string | null;
 	finishedAt: string;
 }
 
@@ -124,6 +140,8 @@ export interface ReadingListHeadlessReport {
 export interface ImporterApi {
 	importAppleNotes(options?: AppleNotesHeadlessOptions): Promise<AppleNotesHeadlessReport>;
 	importReadingList(options: ReadingListHeadlessOptions): Promise<ReadingListHeadlessReport>;
+	/** What this build's headless API understands, so a caller can check before it runs. */
+	supports: { appleNotesChangedAfter: boolean };
 }
 
 /** What an import reported under one outcome, as plain strings a caller can read. */
@@ -250,6 +268,7 @@ export default class ImporterPlugin extends Plugin {
 		this.api = {
 			importAppleNotes: (options = {}) => this.importAppleNotesHeadless(options),
 			importReadingList: options => this.importReadingListHeadless(options),
+			supports: { appleNotesChangedAfter: true },
 		};
 
 		this.addCommand({
@@ -329,13 +348,16 @@ export default class ImporterPlugin extends Plugin {
 		const disposition: AppleNotesDisposition = options.sourceDisposition ?? 'none';
 		const exportedFolder = options.exportedFolder?.trim() || 'Exported';
 		const dispositionDryRun = options.dispositionDryRun ?? false;
-		let createdAfter: number | null = null;
-		if (options.createdAfter !== undefined && options.createdAfter !== null && options.createdAfter !== '') {
-			createdAfter = typeof options.createdAfter === 'number'
-				? options.createdAfter
-				: Date.parse(options.createdAfter);
-			if (!Number.isFinite(createdAfter)) {
-				throw new Error(`createdAfter is not a valid date: ${String(options.createdAfter)}`);
+		let changedAfter: number | null = null;
+		if (options.changedAfter !== undefined && options.changedAfter !== null && options.changedAfter !== '') {
+			changedAfter = new Date(options.changedAfter).getTime();
+			if (Number.isNaN(changedAfter)) {
+				throw new Error(`changedAfter is not a valid date: ${String(options.changedAfter)}`);
+			}
+			if (disposition !== 'none') {
+				// Disposition acts on every note older than this run, including the
+				// ones the cut-off kept out of it, which would leave them nowhere.
+				throw new Error('changedAfter cannot be combined with a source disposition; use sourceDisposition "none".');
 			}
 		}
 
@@ -359,11 +381,14 @@ export default class ImporterPlugin extends Plugin {
 		// Set AFTER `ready`: the importer's own setup reads a saved title template out of
 		// localStorage, so assigning before it would be silently overwritten.
 		importer.noteTitleTemplate = noteTitleTemplate;
-		importer.createdAfter = createdAfter;
-		// Pinned, not inherited, for the reason given on the Safari path below: a
-		// saved "Create copy" would add a file on every scheduled run.
-		importer.duplicateHandling = DuplicateHandling.Update;
-		importer.saveSourceId = true;
+		if (changedAfter !== null) {
+			importer.changedAfter = changedAfter;
+			// Pinned for a scheduled run, for the reason given on the Safari path
+			// below: a saved "Create copy" would add a file on every run, and the
+			// recorded id is what finds a note again after it was moved.
+			importer.duplicateHandling = DuplicateHandling.Update;
+			importer.saveSourceId = true;
+		}
 		// The picker normally decides selectedFolders; headless selects everything
 		// importable. When moving imported notes into an "Exported" folder, that
 		// folder is skipped — otherwise its notes re-import into a subfolder.
@@ -385,6 +410,13 @@ export default class ImporterPlugin extends Plugin {
 		await importer.import(ctx);
 		await importer.finalizeMarkdownOutput(ctx);
 
+		// A locked note is reported as skipped; it can be read once it is unlocked,
+		// so a run that met one is not complete. A note skipped as a duplicate or as
+		// unchanged is already in the vault, so it does not count against the run.
+		const lockedReason = i18n.importer.appleNotes.reasonPasswordProtected();
+		const complete = importer.completed && !ctx.cancelled && ctx.failed.length === 0
+			&& !ctx.log.some(entry => entry.outcome === 'skipped' && entry.reason === lockedReason);
+
 		let disposed = 0;
 		if (disposition !== 'none' && !ctx.cancelled) {
 			disposed = await this.disposeAppleNotes(disposition, startedAt, exportedFolder, dispositionDryRun);
@@ -401,8 +433,10 @@ export default class ImporterPlugin extends Plugin {
 			disposition,
 			dispositionDryRun,
 			disposed,
-			createdAfter: createdAfter === null ? null : new Date(createdAfter).toISOString(),
+			changedAfter: changedAfter === null ? null : new Date(changedAfter).toISOString(),
+			complete,
 			startedAt: startedAt.toISOString(),
+			nextChangedAfter: complete ? startedAt.toISOString() : null,
 			finishedAt: new Date().toISOString(),
 		};
 	}

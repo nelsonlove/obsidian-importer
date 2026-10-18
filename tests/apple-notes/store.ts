@@ -59,8 +59,8 @@ export interface NoteSpec {
 	 * importer falls back on can be tested.
 	 */
 	identifier?: string | null;
-	/** The note's creation date, as an Apple timestamp. Left out, a fixed one. */
-	created?: number;
+	/** The note's modification date, as an Apple timestamp. Left out, a fixed one. */
+	modified?: number;
 }
 
 /** Something a note's text points at: an attachment row, or another note. */
@@ -229,7 +229,7 @@ export function buildStore(filepath: string, spec: StoreSpec): BuiltStore {
 		const notePk = pk++;
 		notePks.push(notePk);
 
-		insertObject.run(notePk, entity.ICNote, note.title, null, note.identifier === undefined ? `NOTE-${notePk}` : note.identifier, null, null, null, null, folderPk, null, null, null, null, note.created ?? created, created, note.pinned ? 1 : 0);
+		insertObject.run(notePk, entity.ICNote, note.title, null, note.identifier === undefined ? `NOTE-${notePk}` : note.identifier, null, null, null, null, folderPk, null, null, null, null, created, note.modified ?? created, note.pinned ? 1 : 0);
 		insertData.run(notePk, notePk, encodeNote(note));
 	}
 
@@ -272,7 +272,15 @@ export function buildStore(filepath: string, spec: StoreSpec): BuiltStore {
 			attachment.size?.width ?? 0, attachment.size?.height ?? 0);
 	}
 
-	return { database: tagged(db), notePks, folderPk, mediaFiles, close: () => db.close() };
+	return { database: tagged(db), notePks, folderPk, mediaFiles, close: () => closeOnce(db) };
+}
+
+/** Close the database unless the importer already did: import() closes it when it ends. */
+const closed = new WeakSet<DatabaseSync>();
+function closeOnce(db: DatabaseSync): void {
+	if (closed.has(db)) return;
+	closed.add(db);
+	db.close();
 }
 
 /**
@@ -280,13 +288,22 @@ export function buildStore(filepath: string, spec: StoreSpec): BuiltStore {
  * the interpolated values passed as parameters.
  */
 function tagged(db: DatabaseSync): SQLiteTagSpawned {
-	const run = (strings: TemplateStringsArray, params: unknown[]) =>
-		db.prepare(strings.join('?')).all(...params as never[]);
+	// An array value expands to one placeholder per item, as `IN (${list})` needs.
+	const run = (strings: TemplateStringsArray, params: unknown[]) => {
+		let sql = strings[0];
+		const values: unknown[] = [];
+		params.forEach((param, i) => {
+			const items = Array.isArray(param) ? param : [param];
+			sql += items.map(() => '?').join(', ') + strings[i + 1];
+			values.push(...items);
+		});
+		return db.prepare(sql).all(...values as never[]);
+	};
 
 	return {
 		get: async (strings: TemplateStringsArray, ...params: unknown[]) => run(strings, params)[0] as never,
 		all: async (strings: TemplateStringsArray, ...params: unknown[]) => run(strings, params) as never,
-		close: () => db.close(),
+		close: () => closeOnce(db),
 	} as unknown as SQLiteTagSpawned;
 }
 

@@ -93,11 +93,14 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 	noteCount = 0;
 	parsedNotes = 0;
 	/**
-	 * When set (ms since the epoch), only notes created after this time are
-	 * imported; older notes are left alone, even when their vault copy is gone.
-	 * Set by the headless API; the dialog never sets it.
+	 * When set (ms since the epoch), only notes modified after this time are
+	 * read; older notes are left alone, even when their vault copy is gone. A
+	 * note's modification time is never earlier than its creation, so this takes
+	 * new notes and edited ones. Set by the headless API; the dialog never sets it.
 	 */
-	createdAfter: number | null = null;
+	changedAfter: number | null = null;
+	/** True once import() has read every selected note to the end. */
+	completed = false;
 
 	omitFirstLine = true;
 	includeHandwriting = false;
@@ -421,6 +424,7 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 
 	async import(ctx: ImportContext): Promise<void> {
 		this.ctx = ctx;
+		this.completed = false;
 		this.protobufRoot = Root.fromJSON(descriptor);
 		const rootFolder = await this.getOutputFolder();
 
@@ -465,19 +469,22 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 				}
 			}
 
-			let notes = await this.database.all`
+			const notes = this.keepChangedAfter(await this.database.all`
 				SELECT
-					z_pk, zfolder, ztitle1 FROM ziccloudsyncingobject
+					z_pk, zfolder, ztitle1, zmodificationdate1 FROM ziccloudsyncingobject
 				WHERE
 					z_ent = ${this.keys.ICNote}
 					AND ztitle1 IS NOT NULL
 					AND zfolder IN (${this.selectedFolders})
-			`;
-			notes = await this.keepCreatedAfter(notes);
+			`);
 			this.noteCount = notes.length;
 
+			let stopped = false;
 			for (let n of notes) {
-				if (await ctx.shouldStop()) break;
+				if (await ctx.shouldStop()) {
+					stopped = true;
+					break;
+				}
 
 				try {
 					await this.resolveNote(n.Z_PK);
@@ -487,6 +494,7 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 					console.error(e);
 				}
 			}
+			this.completed = !stopped;
 		}
 		finally {
 			this.database.close();
@@ -640,37 +648,17 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 	}
 
 	/**
-	 * The rows whose note was created after `createdAfter`, in their order; all
-	 * of them when it is not set. A note with no creation date is left out,
-	 * because it cannot be shown to be new.
+	 * The note rows modified after `changedAfter`, in their order; all of them
+	 * when it is not set. A row with no modification time is kept, because it
+	 * cannot be shown to be old, and the duplicate check still applies to it.
 	 */
-	async keepCreatedAfter<T extends Record<string, any>>(notes: T[]): Promise<T[]> {
-		if (this.createdAfter === null) return notes;
-		const kept: T[] = [];
-		for (const n of notes) {
-			const created = await this.noteCreatedAt(Number(n.Z_PK));
-			if (created !== null && created > this.createdAfter) kept.push(n);
-		}
-		return kept;
-	}
-
-	/**
-	 * The note's creation time in ms since the epoch, read the same way
-	 * resolveNote reads it, or null when the note has no creation date.
-	 */
-	async noteCreatedAt(id: number): Promise<number | null> {
-		const row = await this.database.get`
-			SELECT zcreationdate1, zcreationdate2, zcreationdate3
-			FROM
-				(SELECT
-					*, NULL AS zcreationdate3, NULL AS zcreationdate2
-					FROM ziccloudsyncingobject
-				) AS zcso
-			WHERE zcso.z_pk = ${id}
-		`;
-		const stamp = row?.ZCREATIONDATE3 || row?.ZCREATIONDATE2 || row?.ZCREATIONDATE1;
-		if (!stamp || stamp < 1) return null;
-		return this.decodeTime(stamp);
+	keepChangedAfter<T extends Record<string, any>>(notes: T[]): T[] {
+		const after = this.changedAfter;
+		if (after === null) return notes;
+		return notes.filter(n => {
+			const stamp = Number(n.ZMODIFICATIONDATE1);
+			return !stamp || stamp < 1 || this.decodeTime(stamp) > after;
+		});
 	}
 
 	async resolveNote(id: number): Promise<TFile | null> {

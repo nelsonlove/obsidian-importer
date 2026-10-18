@@ -63,7 +63,7 @@ export async function importing(
 	subject.database = store.database;
 
 	return {
-		vault, skipped, notePks: store.notePks, subject,
+		vault, skipped, notePks: store.notePks, folderPk: store.folderPk, subject, ctx,
 		resolve: (pk: number) => subject.resolveNote(pk),
 		close: () => {
 			store.close();
