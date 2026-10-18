@@ -10,7 +10,7 @@ import { DuplicateHandling } from '../../src/format-importer';
 import { AppleNotesImporter } from '../../src/formats/apple-notes';
 import { descriptor } from '../../src/formats/apple-notes/descriptor';
 import { MemoryVault } from '../shims/vault';
-import { buildStore, NoteSpec } from './store';
+import { AttachmentSpec, buildStore, NoteSpec } from './store';
 
 class TestingAppleNotesImporter extends AppleNotesImporter {
 	useInlineTemplate(template: string): void {
@@ -38,10 +38,10 @@ export function reporter() {
 export async function importing(
 	notes: NoteSpec[],
 	mode: DuplicateHandling,
-	options: { inlineTemplate?: string; saveSourceId?: boolean } = {},
+	options: { inlineTemplate?: string; saveSourceId?: boolean; attachments?: AttachmentSpec[] } = {},
 ) {
 	const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'importer-apple-notes-'));
-	const store = buildStore(nodePath.join(dir, 'NoteStore.sqlite'), { notes });
+	const store = buildStore(nodePath.join(dir, 'NoteStore.sqlite'), { notes, attachments: options.attachments });
 
 	const vault = new MemoryVault();
 	const { ctx, skipped } = reporter();

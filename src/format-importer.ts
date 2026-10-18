@@ -1891,6 +1891,12 @@ export abstract class FormatImporter {
 		return true;
 	}
 
+	/** The file an earlier import recorded for this source ID, if it is still in the vault. Needs indexImportedNotes(). */
+	protected importedFileFor(sourceId: string): TFile | null {
+		const known = this.importedById?.get(sourceId);
+		return known && this.vault.getAbstractFileByPath(known.path) === known ? known : null;
+	}
+
 	indexImportedNotes(): void {
 		const { idProperty } = this;
 		this.claimed.clear();

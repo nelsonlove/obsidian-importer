@@ -101,6 +101,15 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 	changedAfter: number | null = null;
 	/** True once import() has read every selected note to the end. */
 	completed = false;
+	/**
+	 * What this run met that a later run could still clear: a locked note, or an
+	 * attachment not yet downloaded from iCloud. A caller with a cut-off must not
+	 * move it past either.
+	 */
+	locked = 0;
+	notDownloaded = 0;
+	/** The notes this run reads, when a cut-off is set; a link to any other note is never written. */
+	private inRun: Set<number> | null = null;
 
 	omitFirstLine = true;
 	includeHandwriting = false;
@@ -425,6 +434,9 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 	async import(ctx: ImportContext): Promise<void> {
 		this.ctx = ctx;
 		this.completed = false;
+		this.locked = 0;
+		this.notDownloaded = 0;
+		this.inRun = null;
 		this.protobufRoot = Root.fromJSON(descriptor);
 		const rootFolder = await this.getOutputFolder();
 
@@ -478,6 +490,7 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 					AND zfolder IN (${this.selectedFolders})
 			`);
 			this.noteCount = notes.length;
+			if (this.changedAfter !== null) this.inRun = new Set(notes.map(n => Number(n.Z_PK)));
 
 			let stopped = false;
 			for (let n of notes) {
@@ -652,17 +665,28 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 	 * when it is not set. A row with no modification time is kept, because it
 	 * cannot be shown to be old, and the duplicate check still applies to it.
 	 */
-	keepChangedAfter<T extends Record<string, any>>(notes: T[]): T[] {
+	keepChangedAfter<T extends { ZMODIFICATIONDATE1?: unknown }>(notes: T[]): T[] {
 		const after = this.changedAfter;
 		if (after === null) return notes;
 		return notes.filter(n => {
 			const stamp = Number(n.ZMODIFICATIONDATE1);
-			return !stamp || stamp < 1 || this.decodeTime(stamp) > after;
+			return !(stamp >= 1) || this.decodeTime(stamp) > after;
 		});
 	}
 
 	async resolveNote(id: number): Promise<TFile | null> {
 		if (id in this.resolvedFiles) return this.resolvedFiles[id];
+
+		// With a cut-off, a note outside this run is only linked to, never written:
+		// its vault copy may have been filed away or deleted on purpose.
+		if (this.inRun && !this.inRun.has(id)) {
+			const other = await this.database.get`
+				SELECT zidentifier FROM ziccloudsyncingobject WHERE z_pk = ${id}
+			`;
+			const known = other?.ZIDENTIFIER ? this.importedFileFor(String(other.ZIDENTIFIER)) : null;
+			if (known) this.resolvedFiles[id] = known;
+			return known;
+		}
 
 		const row = await this.database.get`
 			SELECT
@@ -681,6 +705,7 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 		`;
 
 		if (row.ZISPASSWORDPROTECTED) {
+			this.locked++;
 			this.ctx.reportSkipped(row.ZTITLE1, i18n.importer.appleNotes.reasonPasswordProtected());
 			return null;
 		}
@@ -907,6 +932,7 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 			const label = await this.describeAttachment(outName, Number(row.ZNOTE));
 
 			if (neverDownloaded) {
+				this.notDownloaded++;
 				this.ctx.reportSkipped(label, i18n.importer.appleNotes.reasonNotDownloaded());
 				return null;
 			}

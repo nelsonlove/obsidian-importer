@@ -10,6 +10,7 @@ import { SafariReadingListImporter } from './formats/safari-reading-list';
 import { ImporterFlow, ImporterShell } from './importer-flow';
 import { ImporterSettingTab } from './importer-setting-tab';
 import { i18n, setLanguage } from './i18n';
+import { CHANGED_AFTER_MARGIN_MS, parseChangedAfter, runComplete } from './formats/apple-notes/headless';
 import { describeReason } from './util';
 
 declare global {
@@ -28,7 +29,8 @@ declare global {
 	}
 }
 
-export type AppleNotesDisposition = 'none' | 'move' | 'delete';
+export type { AppleNotesDisposition } from './formats/apple-notes/headless';
+import type { AppleNotesDisposition } from './formats/apple-notes/headless';
 
 export interface AppleNotesHeadlessOptions {
 	/** Vault folder to import into; created if missing. Defaults to "Apple Notes". */
@@ -53,8 +55,8 @@ export interface AppleNotesHeadlessOptions {
 	/** Preview only — count what disposition WOULD move/delete, without touching Notes. */
 	dispositionDryRun?: boolean;
 	/**
-	 * Read only the notes modified after this time (ISO 8601 string, or ms since
-	 * the epoch): new notes and edited ones. Older notes are not read, so a vault
+	 * Read only the notes modified after this time (an ISO 8601 date-time with its
+	 * offset or Z, or ms since the epoch as a number): new notes and edited ones. Older notes are not read, so a vault
 	 * copy that was filed away or deleted on purpose is not brought back by a
 	 * scheduled run. Not combinable with a source disposition, which would act on
 	 * the older notes this run did not import. With it set, duplicate handling is
@@ -79,16 +81,17 @@ export interface AppleNotesHeadlessReport {
 	changedAfter: string | null;
 	/**
 	 * True only when every selected note was read to the end, none failed and
-	 * none was skipped for a reason a later run could clear (a locked note).
+	 * none was skipped for a reason a later run could clear (a locked note, an
+	 * attachment not yet downloaded from iCloud).
 	 */
 	complete: boolean;
 	/** When this run started, as ISO 8601. */
 	startedAt: string;
 	/**
-	 * The cut-off a caller can pass as changedAfter next time: startedAt when the
-	 * run was complete, else null (keep the old cut-off, so nothing is lost).
-	 * A caller should still go back a margin from it, because a note from another
-	 * device can arrive through iCloud later than its modification time.
+	 * The cut-off a caller can pass as changedAfter next time, as it is: one hour
+	 * before startedAt when the run was complete, else null (keep the old
+	 * cut-off, so nothing is lost). The hour covers a note from another device
+	 * that reaches this Mac through iCloud later than its modification time.
 	 */
 	nextChangedAfter: string | null;
 	finishedAt: string;
@@ -348,18 +351,7 @@ export default class ImporterPlugin extends Plugin {
 		const disposition: AppleNotesDisposition = options.sourceDisposition ?? 'none';
 		const exportedFolder = options.exportedFolder?.trim() || 'Exported';
 		const dispositionDryRun = options.dispositionDryRun ?? false;
-		let changedAfter: number | null = null;
-		if (options.changedAfter !== undefined && options.changedAfter !== null && options.changedAfter !== '') {
-			changedAfter = new Date(options.changedAfter).getTime();
-			if (Number.isNaN(changedAfter)) {
-				throw new Error(`changedAfter is not a valid date: ${String(options.changedAfter)}`);
-			}
-			if (disposition !== 'none') {
-				// Disposition acts on every note older than this run, including the
-				// ones the cut-off kept out of it, which would leave them nowhere.
-				throw new Error('changedAfter cannot be combined with a source disposition; use sourceDisposition "none".');
-			}
-		}
+		const changedAfter = parseChangedAfter(options.changedAfter, disposition);
 
 		// A host with null step elements runs the importer with no UI: draw() and
 		// addSetting() no-op against a null stepEl, and loadFolders() only feeds
@@ -410,12 +402,13 @@ export default class ImporterPlugin extends Plugin {
 		await importer.import(ctx);
 		await importer.finalizeMarkdownOutput(ctx);
 
-		// A locked note is reported as skipped; it can be read once it is unlocked,
-		// so a run that met one is not complete. A note skipped as a duplicate or as
-		// unchanged is already in the vault, so it does not count against the run.
-		const lockedReason = i18n.importer.appleNotes.reasonPasswordProtected();
-		const complete = importer.completed && !ctx.cancelled && ctx.failed.length === 0
-			&& !ctx.log.some(entry => entry.outcome === 'skipped' && entry.reason === lockedReason);
+		const complete = runComplete({
+			completed: importer.completed,
+			cancelled: ctx.cancelled,
+			failed: ctx.failed.length,
+			locked: importer.locked,
+			notDownloaded: importer.notDownloaded,
+		});
 
 		let disposed = 0;
 		if (disposition !== 'none' && !ctx.cancelled) {
@@ -436,7 +429,7 @@ export default class ImporterPlugin extends Plugin {
 			changedAfter: changedAfter === null ? null : new Date(changedAfter).toISOString(),
 			complete,
 			startedAt: startedAt.toISOString(),
-			nextChangedAfter: complete ? startedAt.toISOString() : null,
+			nextChangedAfter: complete ? new Date(startedAt.getTime() - CHANGED_AFTER_MARGIN_MS).toISOString() : null,
 			finishedAt: new Date().toISOString(),
 		};
 	}
