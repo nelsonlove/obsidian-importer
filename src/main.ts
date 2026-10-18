@@ -52,6 +52,12 @@ export interface AppleNotesHeadlessOptions {
 	exportedFolder?: string;
 	/** Preview only — count what disposition WOULD move/delete, without touching Notes. */
 	dispositionDryRun?: boolean;
+	/**
+	 * Import only notes created after this time (ISO 8601 string or ms since the
+	 * epoch). Older notes are not read, so a vault copy that was deleted on
+	 * purpose is not brought back by a scheduled run. Default: every note.
+	 */
+	createdAfter?: string | number;
 }
 
 export interface AppleNotesHeadlessReport {
@@ -65,6 +71,10 @@ export interface AppleNotesHeadlessReport {
 	disposition: AppleNotesDisposition;
 	dispositionDryRun: boolean;
 	disposed: number;
+	/** The createdAfter cut-off used, as ISO 8601, or null when every note was considered. */
+	createdAfter: string | null;
+	/** When this run started, as ISO 8601: the cut-off to pass as createdAfter next time. */
+	startedAt: string;
 	finishedAt: string;
 }
 
@@ -319,6 +329,15 @@ export default class ImporterPlugin extends Plugin {
 		const disposition: AppleNotesDisposition = options.sourceDisposition ?? 'none';
 		const exportedFolder = options.exportedFolder?.trim() || 'Exported';
 		const dispositionDryRun = options.dispositionDryRun ?? false;
+		let createdAfter: number | null = null;
+		if (options.createdAfter !== undefined && options.createdAfter !== null && options.createdAfter !== '') {
+			createdAfter = typeof options.createdAfter === 'number'
+				? options.createdAfter
+				: Date.parse(options.createdAfter);
+			if (!Number.isFinite(createdAfter)) {
+				throw new Error(`createdAfter is not a valid date: ${String(options.createdAfter)}`);
+			}
+		}
 
 		// A host with null step elements runs the importer with no UI: draw() and
 		// addSetting() no-op against a null stepEl, and loadFolders() only feeds
@@ -340,6 +359,11 @@ export default class ImporterPlugin extends Plugin {
 		// Set AFTER `ready`: the importer's own setup reads a saved title template out of
 		// localStorage, so assigning before it would be silently overwritten.
 		importer.noteTitleTemplate = noteTitleTemplate;
+		importer.createdAfter = createdAfter;
+		// Pinned, not inherited, for the reason given on the Safari path below: a
+		// saved "Create copy" would add a file on every scheduled run.
+		importer.duplicateHandling = DuplicateHandling.Update;
+		importer.saveSourceId = true;
 		// The picker normally decides selectedFolders; headless selects everything
 		// importable. When moving imported notes into an "Exported" folder, that
 		// folder is skipped — otherwise its notes re-import into a subfolder.
@@ -377,6 +401,8 @@ export default class ImporterPlugin extends Plugin {
 			disposition,
 			dispositionDryRun,
 			disposed,
+			createdAfter: createdAfter === null ? null : new Date(createdAfter).toISOString(),
+			startedAt: startedAt.toISOString(),
 			finishedAt: new Date().toISOString(),
 		};
 	}

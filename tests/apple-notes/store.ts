@@ -59,6 +59,8 @@ export interface NoteSpec {
 	 * importer falls back on can be tested.
 	 */
 	identifier?: string | null;
+	/** The note's creation date, as an Apple timestamp. Left out, a fixed one. */
+	created?: number;
 }
 
 /** Something a note's text points at: an attachment row, or another note. */
@@ -227,7 +229,7 @@ export function buildStore(filepath: string, spec: StoreSpec): BuiltStore {
 		const notePk = pk++;
 		notePks.push(notePk);
 
-		insertObject.run(notePk, entity.ICNote, note.title, null, note.identifier === undefined ? `NOTE-${notePk}` : note.identifier, null, null, null, null, folderPk, null, null, null, null, created, created, note.pinned ? 1 : 0);
+		insertObject.run(notePk, entity.ICNote, note.title, null, note.identifier === undefined ? `NOTE-${notePk}` : note.identifier, null, null, null, null, folderPk, null, null, null, null, note.created ?? created, created, note.pinned ? 1 : 0);
 		insertData.run(notePk, notePk, encodeNote(note));
 	}
 

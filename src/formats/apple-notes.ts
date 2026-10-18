@@ -92,6 +92,12 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 	multiAccount = false;
 	noteCount = 0;
 	parsedNotes = 0;
+	/**
+	 * When set (ms since the epoch), only notes created after this time are
+	 * imported; older notes are left alone, even when their vault copy is gone.
+	 * Set by the headless API; the dialog never sets it.
+	 */
+	createdAfter: number | null = null;
 
 	omitFirstLine = true;
 	includeHandwriting = false;
@@ -459,7 +465,7 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 				}
 			}
 
-			const notes = await this.database.all`
+			let notes = await this.database.all`
 				SELECT
 					z_pk, zfolder, ztitle1 FROM ziccloudsyncingobject
 				WHERE
@@ -467,6 +473,7 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 					AND ztitle1 IS NOT NULL
 					AND zfolder IN (${this.selectedFolders})
 			`;
+			notes = await this.keepCreatedAfter(notes);
 			this.noteCount = notes.length;
 
 			for (let n of notes) {
@@ -630,6 +637,40 @@ export class AppleNotesImporter extends FormatImporter implements ANContext<TFil
 		this.owners[id] = folder.ZOWNER;
 
 		return resolved;
+	}
+
+	/**
+	 * The rows whose note was created after `createdAfter`, in their order; all
+	 * of them when it is not set. A note with no creation date is left out,
+	 * because it cannot be shown to be new.
+	 */
+	async keepCreatedAfter<T extends Record<string, any>>(notes: T[]): Promise<T[]> {
+		if (this.createdAfter === null) return notes;
+		const kept: T[] = [];
+		for (const n of notes) {
+			const created = await this.noteCreatedAt(Number(n.Z_PK));
+			if (created !== null && created > this.createdAfter) kept.push(n);
+		}
+		return kept;
+	}
+
+	/**
+	 * The note's creation time in ms since the epoch, read the same way
+	 * resolveNote reads it, or null when the note has no creation date.
+	 */
+	async noteCreatedAt(id: number): Promise<number | null> {
+		const row = await this.database.get`
+			SELECT zcreationdate1, zcreationdate2, zcreationdate3
+			FROM
+				(SELECT
+					*, NULL AS zcreationdate3, NULL AS zcreationdate2
+					FROM ziccloudsyncingobject
+				) AS zcso
+			WHERE zcso.z_pk = ${id}
+		`;
+		const stamp = row?.ZCREATIONDATE3 || row?.ZCREATIONDATE2 || row?.ZCREATIONDATE1;
+		if (!stamp || stamp < 1) return null;
+		return this.decodeTime(stamp);
 	}
 
 	async resolveNote(id: number): Promise<TFile | null> {
